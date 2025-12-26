@@ -115,6 +115,19 @@ fn video_default() -> Vec<HashMap<String, String>> {
             String::from("Play audio (loop)"),
             String::from("mpv stop ;; resume ;; mpv sprop loop-file inf ;; mpv loadfile '${embed-url}' ;; echo mpv Player started"),
         )]),
+        HashMap::from([(
+            String::from("Remove Music (AI Vocals)"),
+            String::from("remove-music ${id}"),
+        )]),
+        HashMap::from([(
+            String::from("Select Subtitles"),
+            String::from("select-subtitles ${id}"),
+        )]),
+        HashMap::from([(
+            String::from("View channel"),
+            String::from("channel ${channel-id}"),
+        )]),
+
         // HashMap::from([(
         //     String::from("Add to queue"),
         //     String::from("mpv loadfile '${embed-url}' appendplay;; echo mpv Added to queue"),

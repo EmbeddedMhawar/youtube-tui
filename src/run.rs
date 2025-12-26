@@ -22,7 +22,7 @@ pub fn run(
     framework: &mut Framework,
 ) -> Result<(), Box<dyn Error>> {
     #[cfg(feature = "mpv")]
-    let tick_rate = Duration::from_secs(1);
+    let tick_rate = Duration::from_millis(200);
     #[cfg(feature = "mpv")]
     let mut last_tick = Instant::now();
     loop {

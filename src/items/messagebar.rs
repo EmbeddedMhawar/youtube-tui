@@ -3,7 +3,7 @@ use crate::global::functions::secs_display_string;
 use crate::{config::*, global::structs::*};
 use ratatui::{
     layout::Rect,
-    style::Style,
+    style::{Style, Color},
     widgets::{Block, Borders, Paragraph},
 };
 use tui_additions::framework::*;
@@ -25,10 +25,13 @@ impl FrameworkItem for MessageBar {
             return;
         }
 
+        let ai_progress = SHARED_AI_PROGRESS.lock().unwrap();
+        let is_ai_active = ai_progress.active;
+
         #[cfg(feature = "mpv")]
         {
             let mpv = framework.data.global.get::<MpvWrapper>().unwrap();
-            if Self::is_mpv_render(framework) {
+            if !is_ai_active && Self::is_mpv_render(framework) {
                 let mut label = mpv.property("media-title".to_string()).unwrap();
                 if let Some((name, ext)) = label.rsplit_once('.') {
                     if ext.len() < 5
@@ -60,7 +63,7 @@ impl FrameworkItem for MessageBar {
                         " ".repeat(duration_s.len() - playerhead_s.len())
                     );
                 }
-                let percentage = (playerhead * 100 / duration).to_string();
+                let percentage = if duration > 0 { (playerhead * 100 / duration).to_string() } else { "0".to_string() };
 
                 let right_chunk = format!(
                     "{playerhead_s}/{duration_s} {}[{percentage}%]",
@@ -75,7 +78,7 @@ impl FrameworkItem for MessageBar {
                         let mut seeker_len = length - total_len - 4;
                         let seeker_pad = if seeker_len > 10 { seeker_len / 10 } else { 0 };
                         seeker_len -= seeker_pad * 2;
-                        let seeker_pos = (seeker_len - 1) * playerhead as usize / duration as usize;
+                        let seeker_pos = if duration > 0 { (seeker_len - 1) * playerhead as usize / duration as usize } else { 0 };
                         format!(
                             "{left_chunk} {}├{}-{}┤{} {right_chunk}",
                             " ".repeat(seeker_pad),
@@ -108,19 +111,23 @@ impl FrameworkItem for MessageBar {
             .command_capture;
 
         // display with different border style according to type of message and config
-        let block = Block::default()
+        let mut block = Block::default()
             .borders(Borders::ALL)
-            .border_type(appearance.borders)
-            .border_style(Style::default().fg(if command_capture.is_some() {
-                appearance.colors.command_capture
-            } else {
-                match message {
-                    Message::None => appearance.colors.outline,
-                    Message::Success(_) => appearance.colors.message_success_outline,
-                    Message::Error(_) => appearance.colors.message_error_outline,
-                    Message::Message(_) | Message::Mpv(_) => appearance.colors.message_outline,
-                }
-            }));
+            .border_type(appearance.borders);
+        
+        let border_color = if command_capture.is_some() {
+            appearance.colors.command_capture
+        } else if is_ai_active {
+            Color::Yellow
+        } else {
+            match message {
+                Message::None => appearance.colors.outline,
+                Message::Success(_) => appearance.colors.message_success_outline,
+                Message::Error(_) => appearance.colors.message_error_outline,
+                Message::Message(_) | Message::Mpv(_) => appearance.colors.message_outline,
+            }
+        };
+        block = block.border_style(Style::default().fg(border_color));
 
         // if keys are captured, render the textlist instead of the message text, and exits the
         // function
@@ -138,7 +145,10 @@ impl FrameworkItem for MessageBar {
             return;
         }
 
-        let paragraph = Paragraph::new(
+        let content = if is_ai_active {
+            let eta = ai_progress.eta_seconds.map(|s| format!(" (ETA: {}s)", s)).unwrap_or_default();
+            format!("[AI]: {} / Chunk {} of {}{}", ai_progress.label, ai_progress.current_chunk, ai_progress.total_chunks, eta)
+        } else {
             message.to_string(
                 &framework
                     .data
@@ -146,10 +156,10 @@ impl FrameworkItem for MessageBar {
                     .get::<MainConfig>()
                     .unwrap()
                     .message_bar_default,
-            ),
-        )
-        .block(block);
+            )
+        };
 
+        let paragraph = Paragraph::new(content).block(block);
         frame.render_widget(paragraph, area);
     }
 

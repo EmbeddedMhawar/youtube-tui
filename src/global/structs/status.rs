@@ -1,8 +1,24 @@
 use ratatui::layout::Rect;
 use tui_additions::widgets::TextField;
 use typemap::{CloneMap, Key, TypeMap};
+use std::sync::{Arc, Mutex};
+use lazy_static::lazy_static;
 
 use crate::config::Provider;
+
+#[derive(Clone, Default, Debug)]
+pub struct AiProgress {
+    pub label: String,
+    pub current_chunk: usize,
+    pub total_chunks: usize,
+    pub eta_seconds: Option<u64>,
+    pub active: bool,
+}
+
+lazy_static! {
+    pub static ref SHARED_AI_PROGRESS: Arc<Mutex<AiProgress>> = Arc::new(Mutex::new(AiProgress::default()));
+    pub static ref SELECTED_SUBTITLE: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+}
 
 /// a struct for storing different info, currently only stores one info
 #[derive(Clone)]

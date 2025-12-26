@@ -3,6 +3,7 @@ use crate::{
     global::{functions::*, structs::*, traits::*},
     load_configs,
 };
+
 use crossterm::event::{KeyEvent, KeyModifiers};
 use home::home_dir;
 use ratatui::{backend::CrosstermBackend, Terminal};
@@ -119,6 +120,58 @@ pub fn run_single_command(
     framework: &mut Framework,
     terminal: &mut Terminal<CrosstermBackend<Stdout>>,
 ) {
+    // Custom commands
+    match command {
+        ["select-subtitles", video_id] => {
+            let video_id = video_id.to_string();
+            tokio::spawn(async move {
+                let _ = select_subtitles(&video_id).await;
+            });
+            return;
+        }
+        ["remove-music", video_id] => {
+            let video_id = video_id.to_string();
+            tokio::spawn(async move {
+                let _ = tokio::process::Command::new("pkill").args(["-f", "demucs"]).status().await;
+                let _ = tokio::process::Command::new("pkill").args(["-f", "mpv.*--title=walker-yt"]).status().await;
+
+                match start_ai_separation(video_id.clone(), "vocals".to_string()).await {
+                    Ok(port) => {
+                        let url = format!("https://www.youtube.com/watch?v={}", video_id);
+                        let sub_code = SELECTED_SUBTITLE.lock().unwrap().clone();
+                        let mut args = vec![
+                            "--title=walker-yt".to_string(),
+                            url,
+                            "--ytdl-format=bestvideo".to_string(),
+                            format!("--audio-file=tcp://127.0.0.1:{}", port),
+                            "--audio-demuxer=rawaudio".to_string(),
+                            "--demuxer-rawaudio-rate=44100".to_string(),
+                            "--demuxer-rawaudio-channels=2".to_string(),
+                            "--demuxer-rawaudio-format=s16le".to_string(),
+                            "--cache=yes".to_string(),
+                            "--cache-secs=3600".to_string(),
+                            "--aid=1".to_string(),
+                        ];
+                        if let Some(code) = sub_code {
+                            args.extend([
+                                format!("--ytdl-raw-options=write-subs=,write-auto-sub=,sub-langs=\"{}.*\"", code),
+                                "--sub-visibility=yes".to_string(),
+                                "--sub-auto=all".to_string(),
+                                "--sid=1".to_string(),
+                            ]);
+                        }
+                        let _ = tokio::process::Command::new("mpv").args(args).spawn();
+                    }
+                    Err(e) => {
+                        log(&format!("AI ERROR: {}", e));
+                    }
+                }
+            });
+            return;
+        }
+        _ => {}
+    }
+
     // match a command splitted by space to a bunch of avaliable commands
     match command {
         [] => {}
