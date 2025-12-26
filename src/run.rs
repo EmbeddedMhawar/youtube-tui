@@ -54,7 +54,7 @@ pub fn run(
             // do tick changes
             last_tick = Instant::now();
             // TaskQueue::render_filter(framework, terminal, |item| (*item).type_id() == TypeId::of::<MessageBar>())?;
-            if MessageBar::is_mpv_render(&framework.split_clean().0) {
+            if MessageBar::is_mpv_render(&framework.split_clean().0) || SHARED_AI_PROGRESS.lock().unwrap().active {
                 TaskQueue::render(framework, terminal)?;
             }
             continue;
