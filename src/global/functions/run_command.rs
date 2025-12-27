@@ -19,7 +19,6 @@ use std::{
 };
 use tui_additions::framework::Framework;
 use tokio::process::Command as TokioCommand;
-use tokio::io::AsyncBufReadExt;
 use regex::Regex;
 
 /// runs text command - command from the command line (not TUI) which response is just a string
@@ -129,6 +128,7 @@ pub fn run_single_command(
     
     // Custom commands
     match command {
+        [] => {}
         ["select-quality", video_id] => {
             let video_id = video_id.to_string();
             if let Some(rt) = crate::init::RUNTIME.get() {
@@ -164,35 +164,21 @@ pub fn run_single_command(
             }
             return;
         }
-        ["play-video", video_id, url] => {
-            let url = url.to_string();
+        ["play-video", _video_id, url] => {
+            let url = url.trim_matches('\'').to_string();
             if let Some(rt) = crate::init::RUNTIME.get() {
                 rt.spawn(async move {
                     let sub_code = SELECTED_SUBTITLE.lock().ok().and_then(|guard| guard.clone()).or_else(|| Some("en".to_string()));
                     let quality = SELECTED_QUALITY.lock().ok().and_then(|guard| guard.clone()).unwrap_or_else(|| "bestvideo[height<=1080]".to_string());
                     
-                    let mut args = vec![
-                        "--title=walker-yt".to_string(),
-                        url,
-                        format!("--ytdl-format={}+bestaudio/best", quality),
-                        "--cache=yes".to_string(),
-                        "--cache-secs=3600".to_string(),
-                        "--no-terminal".to_string(),
-                        "--msg-level=all=no".to_string(),
-                        "--pause=no".to_string(),
-                    ];
+                    let mut mpv_args = format!("mpv --title=walker-yt '{}' --ytdl-format='{}+bestaudio/best' --cache=yes --cache-secs=3600 --no-terminal --msg-level=all=no --pause=no", url, quality);
 
                     if let Some(code) = sub_code {
-                        args.extend([
-                            format!("--ytdl-raw-options=write-subs=,write-auto-sub=,sub-langs={}.*", code),
-                            "--sub-visibility=yes".to_string(),
-                            "--sub-auto=all".to_string(),
-                            "--sid=1".to_string(),
-                        ]);
+                        mpv_args.push_str(&format!(" --ytdl-raw-options=write-subs=,write-auto-sub=,sub-langs='{}.*' --sub-visibility=yes --sub-auto=all --sid=1", code));
                     }
 
-                    let _ = TokioCommand::new("mpv")
-                        .args(args)
+                    let _ = StdCommand::new("/bin/sh")
+                        .args(["-c", &format!("{} >/dev/null 2>&1", mpv_args)])
                         .stdin(Stdio::null())
                         .stdout(Stdio::null())
                         .stderr(Stdio::null())
@@ -220,43 +206,23 @@ pub fn run_single_command(
                             let sub_code = SELECTED_SUBTITLE.lock().ok().and_then(|guard| guard.clone()).or_else(|| Some("en".to_string()));
                             let quality = SELECTED_QUALITY.lock().ok().and_then(|guard| guard.clone()).unwrap_or_else(|| "bestvideo[height<=1080]".to_string());
                             
-                            let mut args = vec![
-                                "--title=walker-yt".to_string(),
-                                url,
-                                format!("--ytdl-format={}", quality),
-                                format!("--audio-file=tcp://127.0.0.1:{}", port),
-                                "--audio-demuxer=rawaudio".to_string(),
-                                "--demuxer-rawaudio-rate=44100".to_string(),
-                                "--demuxer-rawaudio-channels=2".to_string(),
-                                "--demuxer-rawaudio-format=s16le".to_string(),
-                                "--cache=yes".to_string(),
-                                "--cache-secs=3600".to_string(),
-                                "--aid=1".to_string(),
-                                "--audio-file-auto=no".to_string(),
-                                "--pause=no".to_string(),
-                                "--no-terminal".to_string(),
-                                "--msg-level=all=no".to_string(),
-                            ];
+                            let mut mpv_args = format!("mpv --title=walker-yt '{}' --ytdl-format='{}' --audio-file=tcp://127.0.0.1:{} --audio-demuxer=rawaudio --demuxer-rawaudio-rate=44100 --demuxer-rawaudio-channels=2 --demuxer-rawaudio-format=s16le --cache=yes --cache-secs=3600 --aid=1 --audio-file-auto=no --pause=no --no-terminal --msg-level=all=no", url, quality, port);
+
                             if let Some(code) = sub_code {
-                                args.extend([
-                                    format!("--ytdl-raw-options=write-subs=,write-auto-sub=,sub-langs={}.*", code),
-                                    "--sub-visibility=yes".to_string(),
-                                    "--sub-auto=all".to_string(),
-                                    "--sid=1".to_string(),
-                                ]);
+                                mpv_args.push_str(&format!(" --ytdl-raw-options=write-subs=,write-auto-sub=,sub-langs='{}.*' --sub-visibility=yes --sub-auto=all --sid=1", code));
                             }
                             
-                            log(&format!("MAIN: Launching mpv with args: {:?}", args));
+                            log(&format!("MAIN: Launching mpv with args: {}", mpv_args));
                             
-                            let mut child = TokioCommand::new("mpv")
-                                .args(args)
+                            let mut child = StdCommand::new("/bin/sh")
+                                .args(["-c", &format!("{} >/dev/null 2>&1", mpv_args)])
                                 .stdin(Stdio::null())
                                 .stdout(Stdio::null())
                                 .stderr(Stdio::null())
                                 .spawn()
                                 .expect("Failed to spawn mpv");
                             
-                            let _ = child.wait().await;
+                            let _ = child.wait();
                             log("MAIN: mpv player finished.");
                             reset_ai_progress();
                             let _ = TokioCommand::new("pkill").args(["-f", "demucs"]).status().await;
@@ -309,12 +275,6 @@ pub fn run_single_command(
             run_single_command(&["internal-pop-menu"], framework, terminal);
             return;
         }
-        _ => {}
-    }
-
-    // match a command splitted by space to a bunch of avaliable commands
-    match command {
-        [] => {}
         ["bookmark", id] => match LocalStore::get_info(id) {
             Some(item) => {
                 let library = framework.data.global.get_mut::<Library>().unwrap();
@@ -662,7 +622,8 @@ pub fn run_single_command(
             };
 
             if framework.data.state.get::<Page>().unwrap() == &Page::Feed {
-                let tasks = framework.data.state.get_mut::<Tasks>().unwrap();
+                let tasks = framework.data.state.get_mut::<Tasks>()
+                    .unwrap();
                 tasks.priority.push(Task::Reload);
                 // tasks.priority.reload_render = false;
                 tasks.priority.push(Task::Custom(TaskFunction::new(Arc::new(
@@ -847,6 +808,37 @@ pub fn run_single_command(
     }
 }
 
+const HELLO_WORLDS: &[&str] = &[
+    "printf(\"Hello World\")",
+    "std::cout << \"Hello World\"",
+    "DISPLAY \"Hello World\".    .",
+    "printIn(\"Hello World\")",
+    "disp('Hello World')",
+    "System.Console.WriteLine(\"Hello World\")",
+    "console.lof 'Hello World'",
+    "WriteLn('Hello World')",
+    "print('Hello World')",
+    "main = putStrLn \"Hello World\"",
+    "writeln ('Hello, world.')",
+    "puts 'Hello World'",
+    "print(\"Hello World\")",
+    "db    'Hello World', 10, 0",
+    "cat('Hello World')",
+    "println('Hello World')",
+    "echo \"Hello World\"",
+    "System.out.println(\"Hello World\")",
+    "println('Hello World\")",
+    "printfn \"Hello World\"",
+    "(print \"Hello World\")",
+    "console.log(\"Hello World\")",
+    "BEGIN DISPLAY(\"Hello World\") END.",
+    "print \"Hello World\"",
+    "puts \"Hello World\"",
+    "console.log 'Hello World'",
+    "print *, \"Hello World\"",
+    "<h1>Hello World<\\h1>",
+];
+
 fn help_msg(cmdefines: &CommandsRemapConfig) -> String {
     format!("\x1b[32mYouTube TUI commands\x1b[0m
 
@@ -908,34 +900,3 @@ fn help_msg(cmdefines: &CommandsRemapConfig) -> String {
 
 \x1b[37mOnly load page and informational commands should be used from command line, the rest can only be used in (`:`) command mode inside the TUI.\x1b[0m", cmdefines.0.iter().map(|(key, value)| format!("   \x1b[33m{: <28}\x1b[0m     `{value}`", key)).collect::<Vec<_>>().join("\n"))
 }
-
-const HELLO_WORLDS: &[&str] = &[
-    "printf(\"Hello World\")",
-    "std::cout << \"Hello World\"",
-    "DISPLAY \"Hello World\".    .",
-    "printIn(\"Hello World\")",
-    "disp('Hello World')",
-    "System.Console.WriteLine(\"Hello World\")",
-    "console.lof 'Hello World'",
-    "WriteLn('Hello World')",
-    "print('Hello World')",
-    "main = putStrLn \"Hello World\"",
-    "writeln ('Hello, world.')",
-    "puts 'Hello World'",
-    "print(\"Hello World\")",
-    "db    'Hello World', 10, 0",
-    "cat('Hello World')",
-    "println('Hello World')",
-    "echo \"Hello World\"",
-    "System.out.println(\"Hello World\")",
-    "println('Hello World\")",
-    "printfn \"Hello World\"",
-    "(print \"Hello World\")",
-    "console.log(\"Hello World\")",
-    "BEGIN DISPLAY(\"Hello World\") END.",
-    "print \"Hello World\"",
-    "puts \"Hello World\"",
-    "console.log 'Hello World'",
-    "print *, \"Hello World\"",
-    "<h1>Hello World<\\h1>",
-];
