@@ -17,9 +17,10 @@ use std::{
     collections::HashMap,
     any::Any,
 };
-use regex::Regex;
 use tui_additions::framework::Framework;
 use tokio::process::Command as TokioCommand;
+use tokio::io::AsyncBufReadExt;
+use regex::Regex;
 
 /// runs text command - command from the command line (not TUI) which response is just a string
 pub fn text_command(command: &str) -> Option<String> {
@@ -130,33 +131,74 @@ pub fn run_single_command(
     match command {
         ["select-quality", video_id] => {
             let video_id = video_id.to_string();
-            tokio::spawn(async move {
-                if let Ok(qualities) = get_video_qualities(&video_id).await {
-                    let mut menu = vec![(String::from("🔙 Back"), String::from("internal-pop-menu"))];
-                    for q in qualities {
-                        menu.push((q.clone(), format!("internal-set-quality {} {}", video_id, q)));
+            if let Some(rt) = crate::init::RUNTIME.get() {
+                rt.spawn(async move {
+                    if let Ok(qualities) = get_video_qualities(&video_id).await {
+                        let mut menu = vec![(String::from("🔙 Back"), String::from("internal-pop-menu"))];
+                        for q in qualities {
+                            menu.push((q.clone(), format!("internal-set-quality {} {}", video_id, q)));
+                        }
+                        if let Ok(mut guard) = SHARED_MENU_INJECTION.lock() {
+                            *guard = Some(menu);
+                        }
                     }
-                    if let Ok(mut guard) = SHARED_MENU_INJECTION.lock() {
-                        *guard = Some(menu);
-                    }
-                }
-            });
+                });
+            }
             return;
         }
         ["select-subtitles", video_id] => {
             let video_id = video_id.to_string();
-            tokio::spawn(async move {
-                if let Ok(subs) = get_subtitles(&video_id).await {
-                    let mut menu = vec![(String::from("🔙 Back"), String::from("internal-pop-menu"))];
-                    menu.push((String::from("🚫 None"), String::from("internal-set-subtitle none")));
-                    for s in subs {
-                        menu.push((s.clone(), format!("internal-set-subtitle {}", s)));
+            if let Some(rt) = crate::init::RUNTIME.get() {
+                rt.spawn(async move {
+                    if let Ok(subs) = get_subtitles(&video_id).await {
+                        let mut menu = vec![(String::from("🔙 Back"), String::from("internal-pop-menu"))];
+                        menu.push((String::from("🚫 None"), String::from("internal-set-subtitle none")));
+                        for s in subs {
+                            menu.push((s.clone(), format!("internal-set-subtitle {}", s)));
+                        }
+                        if let Ok(mut guard) = SHARED_MENU_INJECTION.lock() {
+                            *guard = Some(menu);
+                        }
                     }
-                    if let Ok(mut guard) = SHARED_MENU_INJECTION.lock() {
-                        *guard = Some(menu);
+                });
+            }
+            return;
+        }
+        ["play-video", video_id, url] => {
+            let url = url.to_string();
+            if let Some(rt) = crate::init::RUNTIME.get() {
+                rt.spawn(async move {
+                    let sub_code = SELECTED_SUBTITLE.lock().ok().and_then(|guard| guard.clone()).or_else(|| Some("en".to_string()));
+                    let quality = SELECTED_QUALITY.lock().ok().and_then(|guard| guard.clone()).unwrap_or_else(|| "bestvideo[height<=1080]".to_string());
+                    
+                    let mut args = vec![
+                        "--title=walker-yt".to_string(),
+                        url,
+                        format!("--ytdl-format={}+bestaudio/best", quality),
+                        "--cache=yes".to_string(),
+                        "--cache-secs=3600".to_string(),
+                        "--no-terminal".to_string(),
+                        "--msg-level=all=no".to_string(),
+                        "--pause=no".to_string(),
+                    ];
+
+                    if let Some(code) = sub_code {
+                        args.extend([
+                            format!("--ytdl-raw-options=write-subs=,write-auto-sub=,sub-langs={}.*", code),
+                            "--sub-visibility=yes".to_string(),
+                            "--sub-auto=all".to_string(),
+                            "--sid=1".to_string(),
+                        ]);
                     }
-                }
-            });
+
+                    let _ = TokioCommand::new("mpv")
+                        .args(args)
+                        .stdin(Stdio::null())
+                        .stdout(Stdio::null())
+                        .stderr(Stdio::null())
+                        .spawn();
+                });
+            }
             return;
         }
         ["remove-music", video_id] => {
@@ -225,6 +267,46 @@ pub fn run_single_command(
                     }
                 });
             });
+            return;
+        }
+        ["internal-pop-menu"] => {
+            let mut data = HashMap::new();
+            data.insert(String::from("type"), Box::new(String::from("pop-internal-menu")) as Box<dyn Any>);
+            framework.message(data);
+            return;
+        }
+        ["internal-set-quality", _video_id, quality] => {
+            let quality = quality.to_string();
+            let re = Regex::new(r"(\d+)p(\d+)?").unwrap();
+            if let Some(caps) = re.captures(&quality) {
+                let h = &caps[1];
+                let val = if let Some(f) = caps.get(2) {
+                    format!("bestvideo[height<={}][fps<={}]", h, f.as_str())
+                } else {
+                    format!("bestvideo[height<={}]", h)
+                };
+                if let Ok(mut guard) = SELECTED_QUALITY.lock() {
+                    *guard = Some(val);
+                }
+            }
+            run_single_command(&["internal-pop-menu"], framework, terminal);
+            return;
+        }
+        ["internal-set-subtitle", ..] => {
+            let selection = command[1..].join(" ");
+            if selection == "none" {
+                if let Ok(mut guard) = SELECTED_SUBTITLE.lock() {
+                    *guard = None;
+                }
+            } else {
+                let re = Regex::new(r"\((.*?)\)$").unwrap();
+                if let Some(caps) = re.captures(&selection) {
+                    if let Ok(mut guard) = SELECTED_SUBTITLE.lock() {
+                        *guard = Some(caps[1].to_string());
+                    }
+                }
+            }
+            run_single_command(&["internal-pop-menu"], framework, terminal);
             return;
         }
         _ => {}
@@ -746,44 +828,6 @@ pub fn run_single_command(
                 "none" => Message::None,
                 _ => Message::Error(format!("Unknown type `{}`", r#type)),
             }
-        }
-        ["internal-pop-menu"] => {
-            let mut data = HashMap::new();
-            data.insert(String::from("type"), Box::new(String::from("pop-internal-menu")) as Box<dyn Any>);
-            framework.message(data);
-        }
-        ["internal-set-quality", video_id, quality] => {
-            let video_id = video_id.to_string();
-            let quality = quality.to_string();
-            let re = Regex::new(r"(\d+)p(\d+)?").unwrap();
-            if let Some(caps) = re.captures(&quality) {
-                let h = &caps[1];
-                let val = if let Some(f) = caps.get(2) {
-                    format!("bestvideo[height<={}][fps<={}]", h, f.as_str())
-                } else {
-                    format!("bestvideo[height<={}]", h)
-                };
-                if let Ok(mut guard) = SELECTED_QUALITY.lock() {
-                    *guard = Some(val);
-                }
-            }
-            run_single_command(&["internal-pop-menu"], framework, terminal);
-        }
-        ["internal-set-subtitle", ..] => {
-            let selection = command[1..].join(" ");
-            if selection == "none" {
-                if let Ok(mut guard) = SELECTED_SUBTITLE.lock() {
-                    *guard = None;
-                }
-            } else {
-                let re = Regex::new(r"\((.*?)\)$").unwrap();
-                if let Some(caps) = re.captures(&selection) {
-                    if let Ok(mut guard) = SELECTED_SUBTITLE.lock() {
-                        *guard = Some(caps[1].to_string());
-                    }
-                }
-            }
-            run_single_command(&["internal-pop-menu"], framework, terminal);
         }
         _ => {
             if let Some(cmd) = framework

@@ -3565,7 +3565,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "youtube-tui"
+name = "youtube-tui-ai"
 version = "0.9.3"
 dependencies = [
  "anyhow",

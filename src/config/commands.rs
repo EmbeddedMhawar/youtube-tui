@@ -105,7 +105,7 @@ fn video_default() -> Vec<HashMap<String, String>> {
         )]),
         HashMap::from([(
             String::from("Play video"),
-            String::from("parrun ${video-player} '${embed-url}'"),
+            String::from("play-video ${id} '${embed-url}'"),
         )]),
         HashMap::from([(
             String::from("Play audio"),

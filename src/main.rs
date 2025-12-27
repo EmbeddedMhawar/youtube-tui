@@ -6,20 +6,11 @@ use crossterm::{
 use ratatui::{backend::CrosstermBackend, Terminal};
 use std::{env, error::Error, io, io::Write};
 use tui_additions::framework::{Framework, State};
-use youtube_tui::{exit, global::functions::text_command, init, run};
+use youtube_tui_ai::{exit, global::functions::text_command, init, run};
 
-// stuff happening:
-//  1. setup the terminal
-//  2. run()
-//  3. restore the terminal
-//  4. unwrap errors
-fn main() -> Result<(), Box<dyn Error>> {
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn Error>> {
     let args = env::args().skip(1).collect::<Vec<_>>().join(" ");
-    
-    // Log startup
-    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("/tmp/walker-yt.log") {
-        let _ = writeln!(f, "[{}] APP STARTUP with args: {}", chrono::Local::now().format("%H:%M:%S"), args);
-    }
 
     if let Some(s) = text_command(&args) {
         println!("{s}");
@@ -35,15 +26,18 @@ fn main() -> Result<(), Box<dyn Error>> {
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    let res = (|| -> Result<(), Box<dyn Error>> {
-        init(
-            &mut framework,
-            &mut terminal,
-            if args.is_empty() { None } else { Some(&args) },
-        )?;
-        run(&mut terminal, &mut framework)?;
-        Ok(())
-    })();
+    // Use spawn_blocking for the main loop if needed, but standard run should work
+    let res = init(
+        &mut framework,
+        &mut terminal,
+        if args.is_empty() { None } else { Some(&args) },
+    );
+
+    let res = if res.is_ok() {
+        run(&mut terminal, &mut framework)
+    } else {
+        Err(res.err().unwrap())
+    };
 
     disable_raw_mode()?;
     execute!(
