@@ -19,7 +19,6 @@ use std::{
 };
 use tui_additions::framework::Framework;
 use tokio::process::Command as TokioCommand;
-use tokio::io::AsyncBufReadExt;
 use regex::Regex;
 
 /// runs text command - command from the command line (not TUI) which response is just a string
@@ -35,70 +34,7 @@ pub fn text_command(command: &str) -> Option<String> {
             env!("CARGO_PKG_NAME"),
             env!("CARGO_PKG_VERSION")
         )),
-        ["loadpage", page, ..] => {
-            // Validate loadpage commands from command line to prevent hanging in raw screen
-            match *page {
-                "popular" | "trending" | "watchhistory" | "feed" | "library" => {
-                    if command_parts.len() != 2 {
-                        return Some(format!("Usage: `loadpage {}`", page));
-                    }
-                    None // Let it proceed to TUI
-                }
-                "channel" | "video" | "playlist" => {
-                    if command_parts.len() != 3 {
-                        return Some(format!("Usage: `loadpage {} {{id/url}}`", page));
-                    }
-                    None // Let it proceed to TUI
-                }
-                "search" => {
-                    if command_parts.len() < 3 {
-                        return Some("Usage: `loadpage search {query}`".to_string());
-                    }
-                    None // Let it proceed to TUI
-                }
-                _ => Some(format!("Unknown page: `{}`", page)),
-            }
-        }
-        _ => {
-            // Check if this is a remapped command that would become a loadpage command
-            if let Some(remapped_cmd) = CommandsRemapConfig::load(WriteConfig::Dont)
-                .unwrap()
-                .get(&command_parts)
-            {
-                // If it remaps to a loadpage command, validate it
-                if remapped_cmd.starts_with("loadpage ") {
-                    let remapped_parts: Vec<&str> = remapped_cmd.split_ascii_whitespace().collect();
-                    if remapped_parts.len() >= 2 {
-                        let page = remapped_parts[1];
-                        match page {
-                            "popular" | "trending" | "watchhistory" | "feed" | "library" => {
-                                if command_parts.len() != 1 {
-                                    return Some(format!("Usage: `{}`", command_parts[0]));
-                                }
-                            }
-                            "channel" | "video" | "playlist" => {
-                                if command_parts.len() != 2 {
-                                    return Some(format!(
-                                        "Usage: `{} {{id/url}}`",
-                                        command_parts[0]
-                                    ));
-                                }
-                            }
-                            "search" => {
-                                if command_parts.len() < 2 {
-                                    return Some(format!(
-                                        "Usage: `{} {{query}}`",
-                                        command_parts[0]
-                                    ));
-                                }
-                            }
-                            _ => {}
-                        }
-                    }
-                }
-            }
-            None
-        }
+        _ => None,
     }
 }
 
@@ -127,8 +63,9 @@ pub fn run_single_command(
 ) {
     log(&format!("RUN SINGLE COMMAND: {:?}", command));
     
-    // Custom commands
+    // Custom AI and Metadata Hooks
     match command {
+        [] => {}
         ["select-quality", video_id] => {
             let video_id = video_id.to_string();
             if let Some(rt) = crate::init::RUNTIME.get() {
@@ -165,34 +102,21 @@ pub fn run_single_command(
             return;
         }
         ["play-video", video_id, url] => {
-            let url = url.to_string();
+            let _video_id = video_id.to_string();
+            let url = url.trim_matches('\'').to_string();
             if let Some(rt) = crate::init::RUNTIME.get() {
                 rt.spawn(async move {
                     let sub_code = SELECTED_SUBTITLE.lock().ok().and_then(|guard| guard.clone()).or_else(|| Some("en".to_string()));
                     let quality = SELECTED_QUALITY.lock().ok().and_then(|guard| guard.clone()).unwrap_or_else(|| "bestvideo[height<=1080]".to_string());
                     
-                    let mut args = vec![
-                        "--title=walker-yt".to_string(),
-                        url,
-                        format!("--ytdl-format={}+bestaudio/best", quality),
-                        "--cache=yes".to_string(),
-                        "--cache-secs=3600".to_string(),
-                        "--no-terminal".to_string(),
-                        "--msg-level=all=no".to_string(),
-                        "--pause=no".to_string(),
-                    ];
+                    let mut mpv_args = format!("mpv --title=walker-yt '{}' --ytdl-format='{}+bestaudio/best' --cache=yes --cache-secs=3600 --no-terminal --msg-level=all=no --pause=no", url, quality);
 
                     if let Some(code) = sub_code {
-                        args.extend([
-                            format!("--ytdl-raw-options=write-subs=,write-auto-sub=,sub-langs={}.*", code),
-                            "--sub-visibility=yes".to_string(),
-                            "--sub-auto=all".to_string(),
-                            "--sid=1".to_string(),
-                        ]);
+                        mpv_args.push_str(&format!(" --ytdl-raw-options=write-subs=,write-auto-sub=,sub-langs='{}.*' --sub-visibility=yes --sub-auto=all --sid=1", code));
                     }
 
-                    let _ = TokioCommand::new("mpv")
-                        .args(args)
+                    let _ = StdCommand::new("/bin/sh")
+                        .args(["-c", &format!("{} >/dev/null 2>&1", mpv_args)])
                         .stdin(Stdio::null())
                         .stdout(Stdio::null())
                         .stderr(Stdio::null())
@@ -220,43 +144,23 @@ pub fn run_single_command(
                             let sub_code = SELECTED_SUBTITLE.lock().ok().and_then(|guard| guard.clone()).or_else(|| Some("en".to_string()));
                             let quality = SELECTED_QUALITY.lock().ok().and_then(|guard| guard.clone()).unwrap_or_else(|| "bestvideo[height<=1080]".to_string());
                             
-                            let mut args = vec![
-                                "--title=walker-yt".to_string(),
-                                url,
-                                format!("--ytdl-format={}", quality),
-                                format!("--audio-file=tcp://127.0.0.1:{}", port),
-                                "--audio-demuxer=rawaudio".to_string(),
-                                "--demuxer-rawaudio-rate=44100".to_string(),
-                                "--demuxer-rawaudio-channels=2".to_string(),
-                                "--demuxer-rawaudio-format=s16le".to_string(),
-                                "--cache=yes".to_string(),
-                                "--cache-secs=3600".to_string(),
-                                "--aid=1".to_string(),
-                                "--audio-file-auto=no".to_string(),
-                                "--pause=no".to_string(),
-                                "--no-terminal".to_string(),
-                                "--msg-level=all=no".to_string(),
-                            ];
+                            let mut mpv_args = format!("mpv --title=walker-yt '{}' --ytdl-format='{}' --audio-file=tcp://127.0.0.1:{} --audio-demuxer=rawaudio --demuxer-rawaudio-rate=44100 --demuxer-rawaudio-channels=2 --demuxer-rawaudio-format=s16le --cache=yes --cache-secs=3600 --aid=1 --audio-file-auto=no --pause=no --no-terminal --msg-level=all=no", url, quality, port);
+
                             if let Some(code) = sub_code {
-                                args.extend([
-                                    format!("--ytdl-raw-options=write-subs=,write-auto-sub=,sub-langs={}.*", code),
-                                    "--sub-visibility=yes".to_string(),
-                                    "--sub-auto=all".to_string(),
-                                    "--sid=1".to_string(),
-                                ]);
+                                mpv_args.push_str(&format!(" --ytdl-raw-options=write-subs=,write-auto-sub=,sub-langs='{}.*' --sub-visibility=yes --sub-auto=all --sid=1", code));
                             }
                             
-                            log(&format!("MAIN: Launching mpv with args: {:?}", args));
+                            log(&format!("MAIN: Launching mpv with args: {}", mpv_args));
                             
-                            let mut child = TokioCommand::new("mpv")
-                                .args(args)
+                            let mut child = StdCommand::new("/bin/sh")
+                                .args(["-c", &format!("{} >/dev/null 2>&1", mpv_args)])
                                 .stdin(Stdio::null())
                                 .stdout(Stdio::null())
                                 .stderr(Stdio::null())
                                 .spawn()
                                 .expect("Failed to spawn mpv");
                             
-                            let _ = child.wait().await;
+                            let _ = child.wait();
                             log("MAIN: mpv player finished.");
                             reset_ai_progress();
                             let _ = TokioCommand::new("pkill").args(["-f", "demucs"]).status().await;
@@ -349,19 +253,6 @@ pub fn run_single_command(
         }
         ["rmcache", id] => {
             let res = LocalStore::rm_cache(id);
-            let _ = fs::remove_file(
-                home_dir()
-                    .unwrap()
-                    .join(".local/share/youtube-tui/info/")
-                    .join(id)
-                    .with_extension("json"),
-            );
-            let _ = fs::remove_file(
-                home_dir()
-                    .unwrap()
-                    .join(".local/share/youtube-tui/thumbnails/")
-                    .join(id),
-            );
             if res {
                 *framework.data.global.get_mut::<Message>().unwrap() =
                     Message::Success(String::from("Cache cleared"))
@@ -386,76 +277,58 @@ pub fn run_single_command(
         }
         // loads a given page
         ["loadpage", page, ..] => {
-            let page = match *page {
+            let page_obj = match *page {
                 "popular" => Some(Page::MainMenu(MainMenuPage::Popular)),
                 "trending" => Some(Page::MainMenu(MainMenuPage::Trending)),
                 "watchhistory" => Some(Page::MainMenu(MainMenuPage::History)),
                 "feed" => Some(Page::Feed),
                 "library" => Some(Page::MainMenu(MainMenuPage::Library)),
                 "channel" => {
-                    if command.len() != 3 {
-                        *framework.data.global.get_mut::<Message>().unwrap() =
-                            Message::Message(String::from("Usage: `loadpage channel {id/url}`"));
-                        return;
-                    }
-
-                    match from_channel_url(command[2]) {
-                        Ok(id) => Some(Page::ChannelDisplay(ChannelDisplayPage {
-                            id,
-                            r#type: ChannelDisplayPageType::Main,
-                        })),
-                        Err(e) => {
-                            *framework.data.global.get_mut::<Message>().unwrap() =
-                                Message::Error(e);
-                            return;
+                    if command.len() >= 3 {
+                        match from_channel_url(command[2]) {
+                            Ok(id) => Some(Page::ChannelDisplay(ChannelDisplayPage {
+                                id,
+                                r#type: ChannelDisplayPageType::Main,
+                            })),
+                            Err(e) => {
+                                *framework.data.global.get_mut::<Message>().unwrap() =
+                                    Message::Error(e);
+                                None
+                            }
                         }
-                    }
+                    } else { None }
                 }
                 "video" => {
-                    if command.len() != 3 {
-                        *framework.data.global.get_mut::<Message>().unwrap() =
-                            Message::Message(String::from("Usage: `loadpage video {id/url}`"));
-                        return;
-                    }
-
-                    match from_video_url(command[2]) {
-                        Ok(id) => Some(Page::SingleItem(SingleItemPage::Video(id))),
-                        Err(e) => {
-                            *framework.data.global.get_mut::<Message>().unwrap() =
-                                Message::Error(e);
-                            return;
+                    if command.len() >= 3 {
+                        match from_video_url(command[2]) {
+                            Ok(id) => Some(Page::SingleItem(SingleItemPage::Video(id))),
+                            Err(e) => {
+                                *framework.data.global.get_mut::<Message>().unwrap() =
+                                    Message::Error(e);
+                                None
+                            }
                         }
-                    }
+                    } else { None }
                 }
                 "playlist" => {
-                    if command.len() != 3 {
-                        *framework.data.global.get_mut::<Message>().unwrap() =
-                            Message::Message(String::from("Usage: `loadpage playlist {id/url}`"));
-                        return;
-                    }
-
-                    match from_playlist_url(command[2]) {
-                        Ok(id) => Some(Page::SingleItem(SingleItemPage::Playlist(id))),
-                        Err(e) => {
-                            *framework.data.global.get_mut::<Message>().unwrap() =
-                                Message::Error(e);
-                            return;
+                    if command.len() >= 3 {
+                        match from_playlist_url(command[2]) {
+                            Ok(id) => Some(Page::SingleItem(SingleItemPage::Playlist(id))),
+                            Err(e) => {
+                                *framework.data.global.get_mut::<Message>().unwrap() =
+                                    Message::Error(e);
+                                None
+                            }
                         }
-                    }
+                    } else { None }
                 }
                 "search" => {
-                    if command.len() == 2 {
-                        *framework.data.global.get_mut::<Message>().unwrap() =
-                            Message::Message(String::from("Usage: `search {query}`"));
-                        return;
-                    }
-
-                    // search for a query, although the command is matched as an array, the original query can
-                    // be reconstructed by joining the string with a space in between
-                    let search = framework.data.state.get_mut::<Search>().unwrap();
-                    search.query = command[2..].join(" ");
-                    let cloned = search.clone();
-                    Some(Page::Search(cloned))
+                    if command.len() >= 3 {
+                        let search = framework.data.state.get_mut::<Search>().unwrap();
+                        search.query = command[2..].join(" ");
+                        let cloned = search.clone();
+                        Some(Page::Search(cloned))
+                    } else { None }
                 }
                 _ => {
                     *framework.data.global.get_mut::<Message>().unwrap() =
@@ -464,14 +337,14 @@ pub fn run_single_command(
                 }
             };
 
-            if let Some(page) = page {
+            if let Some(p) = page_obj {
                 framework
                     .data
                     .state
                     .get_mut::<Tasks>()
                     .unwrap()
                     .priority
-                    .push(Task::LoadPage(page))
+                    .push(Task::LoadPage(p))
             }
         }
         ["history", "back"] | ["back"] => {
@@ -544,7 +417,7 @@ pub fn run_single_command(
             *framework.data.global.get_mut::<Message>().unwrap() =
                 Message::Success(command.clone());
             if let Ok(mut child) =
-                StdCommand::new(&framework.data.global.get::<MainConfig>().unwrap().shell)
+                StdCommand::new("/bin/sh")
                     .args(["-c", &command])
                     .stdout(Stdio::null())
                     .stderr(Stdio::null())
@@ -557,7 +430,7 @@ pub fn run_single_command(
             let command = command[1..].join(" ");
             *framework.data.global.get_mut::<Message>().unwrap() =
                 Message::Success(command.clone());
-            let _ = StdCommand::new(&framework.data.global.get::<MainConfig>().unwrap().shell)
+            let _ = StdCommand::new("/bin/sh")
                 .args(["-c", &command])
                 .stdout(Stdio::null())
                 .stderr(Stdio::null())
@@ -662,7 +535,8 @@ pub fn run_single_command(
             };
 
             if framework.data.state.get::<Page>().unwrap() == &Page::Feed {
-                let tasks = framework.data.state.get_mut::<Tasks>().unwrap();
+                let tasks = framework.data.state.get_mut::<Tasks>()
+                    .unwrap();
                 tasks.priority.push(Task::Reload);
                 // tasks.priority.reload_render = false;
                 tasks.priority.push(Task::Custom(TaskFunction::new(Arc::new(
