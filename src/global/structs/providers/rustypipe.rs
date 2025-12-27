@@ -138,71 +138,121 @@ impl SearchProviderTrait for RustyPipeWrapper {
         id: &str,
     ) -> Result<crate::global::common::video::Video, Box<dyn std::error::Error>> {
         let query = self.0.query();
-        let (player, details) = RUNTIME
+        let res = RUNTIME
             .get()
             .unwrap()
             .block_on(async { futures::join!(query.player(id), query.video_details(id)) });
 
-        let player = player?;
-        let details = details?;
+        if let (Ok(player), Ok(details)) = res {
+            return Ok(Video {
+                r#type: "video".to_string(),
+                title: player
+                    .details
+                    .name
+                    .unwrap_or("<Unable to fetch video name>".to_string()),
+                id: player.details.id,
+                thumbnails: player
+                    .details
+                    .thumbnail
+                    .iter()
+                    .cloned()
+                    .map(thumbnail_convert)
+                    .collect(),
+                storyboards: Vec::new(),
+                description: details.description.to_plaintext(),
+                description_html: details.description.to_html(),
+                published: details
+                    .publish_date
+                    .map(|time| time.to_utc().unix_timestamp() as u64)
+                    .unwrap_or_default(),
+                published_text: details
+                    .publish_date_txt
+                    .unwrap_or("Unknown publish date".to_string()),
+                keywords: player.details.keywords,
+                views: details.view_count,
+                likes: details.like_count.unwrap_or_default(),
+                dislikes: 0, // TODO
+                paid: false,
+                premium: false,
+                family_friendly: false,
+                allowed_regions: Vec::new(),
+                genre: String::from("Unknown genre"),
+                genre_url: None,
+                author: details.channel.name,
+                author_id: details.channel.id.clone(),
+                author_url: format!("https://www.youtube.com/channel/{}", details.channel.id),
+                author_thumbnails: details
+                    .channel
+                    .avatar
+                    .iter()
+                    .cloned()
+                    .map(image_convert)
+                    .collect(),
+                sub_count_text: viewcount_text(details.channel.subscriber_count.unwrap_or(0)),
+                length: player.details.duration,
+                allow_ratings: true,
+                rating: 0_f32,
+                listed: true,
+                live: player.details.is_live,
+                upcoming: false,
+                premiere_timestamp: 0,
+                dash: "No dash".to_string(),
+                adaptive_formats: Vec::new(),   // TODO
+                format_streams: Vec::new(),     // TODO
+                captions: Vec::new(),           // TODO
+                recommended_videos: Vec::new(), // TODO
+            });
+        }
+
+        // FALLBACK: Use yt-dlp if rustypipe fails
+        let metadata = RUNTIME.get().unwrap().block_on(async { 
+            crate::global::functions::get_video_metadata_yt_dlp(id).await 
+        })?;
 
         Ok(Video {
             r#type: "video".to_string(),
-            title: player
-                .details
-                .name
-                .unwrap_or("<Unable to fetch video name>".to_string()),
-            id: player.details.id,
-            thumbnails: player
-                .details
-                .thumbnail
-                .iter()
-                .cloned()
-                .map(thumbnail_convert)
-                .collect(),
+            title: metadata["title"].as_str().unwrap_or("Unknown Title").to_string(),
+            id: metadata["id"].as_str().unwrap_or(id).to_string(),
+            thumbnails: metadata["thumbnails"].as_array().map(|arr| {
+                arr.iter().map(|t| CommonThumbnail {
+                    quality: "high".to_string(),
+                    url: t["url"].as_str().unwrap_or_default().to_string(),
+                    width: t["width"].as_u64().unwrap_or(0) as u32,
+                    height: t["height"].as_u64().unwrap_or(0) as u32,
+                }).collect()
+            }).unwrap_or_default(),
             storyboards: Vec::new(),
-            description: details.description.to_plaintext(),
-            description_html: details.description.to_html(),
-            published: details
-                .publish_date
-                .map(|time| time.to_utc().unix_timestamp() as u64)
-                .unwrap_or_default(),
-            published_text: details
-                .publish_date_txt
-                .unwrap_or("Unknown publish date".to_string()),
-            keywords: player.details.keywords,
-            views: details.view_count,
-            likes: details.like_count.unwrap_or_default(),
-            dislikes: 0, // TODO
+            description: metadata["description"].as_str().unwrap_or_default().to_string(),
+            description_html: String::new(),
+            published: metadata["timestamp"].as_u64().unwrap_or_default(),
+            published_text: metadata["upload_date"].as_str().unwrap_or("Unknown").to_string(),
+            keywords: Vec::new(),
+            views: metadata["view_count"].as_u64().unwrap_or_default(),
+            likes: metadata["like_count"].as_u64().unwrap_or_default() as u32,
+            dislikes: 0,
             paid: false,
             premium: false,
-            family_friendly: false,
+            family_friendly: true,
             allowed_regions: Vec::new(),
-            genre: String::from("Unknown genre"),
+            genre: metadata["categories"].as_array().and_then(|a| a.get(0)).and_then(|v| v.as_str()).unwrap_or("Unknown").to_string(),
             genre_url: None,
-            author: details.channel.name,
-            author_id: details.channel.id.clone(),
-            author_url: format!("https://www.youtube.com/channel/{}", details.channel.id),
-            author_thumbnails: details
-                .channel
-                .avatar
-                .iter()
-                .cloned()
-                .map(image_convert)
-                .collect(),
-            sub_count_text: viewcount_text(details.channel.subscriber_count.unwrap_or(0)),
-            length: player.details.duration,
+            author: metadata["uploader"].as_str().unwrap_or("Unknown Uploader").to_string(),
+            author_id: metadata["uploader_id"].as_str().unwrap_or_default().to_string(),
+            author_url: metadata["uploader_url"].as_str().unwrap_or_default().to_string(),
+            author_thumbnails: Vec::new(),
+            sub_count_text: format!("{} subs", metadata["channel_follower_count"].as_u64().unwrap_or_default()),
+            length: metadata["duration"].as_u64().unwrap_or_default() as u32,
             allow_ratings: true,
-            rating: 0_f32,
+            rating: 0.0,
             listed: true,
-            live: player.details.is_live,
+            live: metadata["is_live"].as_bool().unwrap_or(false),
             upcoming: false,
             premiere_timestamp: 0,
-            dash: "No dash".to_string(),
-            adaptive_formats: Vec::new(),   // TODO
-            format_streams: Vec::new(),     // TODO
-            captions: Vec::new(),           // TODO
-            recommended_videos: Vec::new(), // TODO
+            dash: String::new(),
+            adaptive_formats: Vec::new(),
+            format_streams: Vec::new(),
+            captions: Vec::new(),
+            recommended_videos: Vec::new(),
         })
     }
 

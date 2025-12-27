@@ -51,6 +51,7 @@ pub enum SingleItemType {
 pub struct SingleVideoItem {
     pub textlist: TextList,
     pub commands: Vec<(String, String)>,
+    pub menu_stack: Vec<Vec<(String, String)>>,
 }
 
 #[derive(Clone)]
@@ -83,6 +84,7 @@ impl SingleVideoItem {
                 )
                 .unwrap(),
             commands,
+            menu_stack: Vec::new(),
         }
     }
 
@@ -127,7 +129,7 @@ impl SingleVideoItem {
     ) -> Vec<(String, String)> {
         let video_item = item.fullvideo().unwrap();
 
-        vec![
+        let mut envs = vec![
             (
                 String::from("url"),
                 match status.provider {
@@ -170,7 +172,21 @@ impl SingleVideoItem {
                     .unwrap()
                     .to_string(),
             ),
-        ]
+        ];
+
+        // Add current selection state
+        if let Ok(guard) = SELECTED_QUALITY.lock() {
+            if let Some(q) = guard.as_ref() {
+                envs.push((String::from("selected-quality"), q.clone()));
+            }
+        }
+        if let Ok(guard) = SELECTED_SUBTITLE.lock() {
+            if let Some(s) = guard.as_ref() {
+                envs.push((String::from("selected-subtitle"), s.clone()));
+            }
+        }
+
+        envs
     }
 }
 
@@ -535,6 +551,31 @@ impl FrameworkItem for SingleItem {
         framework: &mut FrameworkClean,
         data: std::collections::HashMap<String, Box<dyn std::any::Any>>,
     ) -> bool {
+        if let Some(msg_type) = data.get("type").and_then(|v| v.downcast_ref::<String>()) {
+            if msg_type == "set-internal-menu" {
+                if let SingleItemType::Video(ref mut v) = self.r#type {
+                    if let Some(menu) = data.get("menu").and_then(|v| v.downcast_ref::<Vec<(String, String)>>()) {
+                        v.menu_stack.push(v.commands.clone());
+                        v.commands = menu.clone();
+                        v.textlist.set_items(&v.commands.iter().map(|c| c.0.as_str()).collect::<Vec<_>>()).unwrap();
+                        v.textlist.selected = 0;
+                        let _ = v.textlist.update();
+                        return true;
+                    }
+                }
+            } else if msg_type == "pop-internal-menu" {
+                if let SingleItemType::Video(ref mut v) = self.r#type {
+                    if let Some(prev_menu) = v.menu_stack.pop() {
+                        v.commands = prev_menu;
+                        v.textlist.set_items(&v.commands.iter().map(|c| c.0.as_str()).collect::<Vec<_>>()).unwrap();
+                        v.textlist.selected = 0;
+                        let _ = v.textlist.update();
+                        return true;
+                    }
+                }
+            }
+        }
+
         if !data.contains_key("type") {
             return false;
         }

@@ -12,10 +12,14 @@ use std::{
     error::Error,
     fs,
     io::Stdout,
-    process::{Command, Stdio},
+    process::{Command as StdCommand, Stdio},
     sync::Arc,
+    collections::HashMap,
+    any::Any,
 };
+use regex::Regex;
 use tui_additions::framework::Framework;
+use tokio::process::Command as TokioCommand;
 
 /// runs text command - command from the command line (not TUI) which response is just a string
 pub fn text_command(command: &str) -> Option<String> {
@@ -120,52 +124,106 @@ pub fn run_single_command(
     framework: &mut Framework,
     terminal: &mut Terminal<CrosstermBackend<Stdout>>,
 ) {
+    log(&format!("RUN SINGLE COMMAND: {:?}", command));
+    
     // Custom commands
     match command {
+        ["select-quality", video_id] => {
+            let video_id = video_id.to_string();
+            tokio::spawn(async move {
+                if let Ok(qualities) = get_video_qualities(&video_id).await {
+                    let mut menu = vec![(String::from("🔙 Back"), String::from("internal-pop-menu"))];
+                    for q in qualities {
+                        menu.push((q.clone(), format!("internal-set-quality {} {}", video_id, q)));
+                    }
+                    if let Ok(mut guard) = SHARED_MENU_INJECTION.lock() {
+                        *guard = Some(menu);
+                    }
+                }
+            });
+            return;
+        }
         ["select-subtitles", video_id] => {
             let video_id = video_id.to_string();
             tokio::spawn(async move {
-                let _ = select_subtitles(&video_id).await;
+                if let Ok(subs) = get_subtitles(&video_id).await {
+                    let mut menu = vec![(String::from("🔙 Back"), String::from("internal-pop-menu"))];
+                    menu.push((String::from("🚫 None"), String::from("internal-set-subtitle none")));
+                    for s in subs {
+                        menu.push((s.clone(), format!("internal-set-subtitle {}", s)));
+                    }
+                    if let Ok(mut guard) = SHARED_MENU_INJECTION.lock() {
+                        *guard = Some(menu);
+                    }
+                }
             });
             return;
         }
         ["remove-music", video_id] => {
             let video_id = video_id.to_string();
-            tokio::spawn(async move {
-                let _ = tokio::process::Command::new("pkill").args(["-f", "demucs"]).status().await;
-                let _ = tokio::process::Command::new("pkill").args(["-f", "mpv.*--title=walker-yt"]).status().await;
+            std::thread::spawn(move || {
+                let rt = tokio::runtime::Builder::new_multi_thread()
+                    .worker_threads(4)
+                    .enable_all()
+                    .build()
+                    .unwrap();
+                
+                rt.block_on(async move {
+                    let _ = TokioCommand::new("pkill").args(["-f", "demucs"]).status().await;
+                    let _ = TokioCommand::new("pkill").args(["-f", "mpv.*--title=walker-yt"]).status().await;
 
-                match start_ai_separation(video_id.clone(), "vocals".to_string()).await {
-                    Ok(port) => {
-                        let url = format!("https://www.youtube.com/watch?v={}", video_id);
-                        let sub_code = SELECTED_SUBTITLE.lock().unwrap().clone();
-                        let mut args = vec![
-                            "--title=walker-yt".to_string(),
-                            url,
-                            "--ytdl-format=bestvideo".to_string(),
-                            format!("--audio-file=tcp://127.0.0.1:{}", port),
-                            "--audio-demuxer=rawaudio".to_string(),
-                            "--demuxer-rawaudio-rate=44100".to_string(),
-                            "--demuxer-rawaudio-channels=2".to_string(),
-                            "--demuxer-rawaudio-format=s16le".to_string(),
-                            "--cache=yes".to_string(),
-                            "--cache-secs=3600".to_string(),
-                            "--aid=1".to_string(),
-                        ];
-                        if let Some(code) = sub_code {
-                            args.extend([
-                                format!("--ytdl-raw-options=write-subs=,write-auto-sub=,sub-langs=\"{}.*\"", code),
-                                "--sub-visibility=yes".to_string(),
-                                "--sub-auto=all".to_string(),
-                                "--sid=1".to_string(),
-                            ]);
+                    match start_ai_separation(video_id.clone(), "vocals".to_string()).await {
+                        Ok(port) => {
+                            let url = format!("https://www.youtube.com/watch?v={}", video_id);
+                            let sub_code = SELECTED_SUBTITLE.lock().ok().and_then(|guard| guard.clone()).or_else(|| Some("en".to_string()));
+                            let quality = SELECTED_QUALITY.lock().ok().and_then(|guard| guard.clone()).unwrap_or_else(|| "bestvideo[height<=1080]".to_string());
+                            
+                            let mut args = vec![
+                                "--title=walker-yt".to_string(),
+                                url,
+                                format!("--ytdl-format={}", quality),
+                                format!("--audio-file=tcp://127.0.0.1:{}", port),
+                                "--audio-demuxer=rawaudio".to_string(),
+                                "--demuxer-rawaudio-rate=44100".to_string(),
+                                "--demuxer-rawaudio-channels=2".to_string(),
+                                "--demuxer-rawaudio-format=s16le".to_string(),
+                                "--cache=yes".to_string(),
+                                "--cache-secs=3600".to_string(),
+                                "--aid=1".to_string(),
+                                "--audio-file-auto=no".to_string(),
+                                "--pause=no".to_string(),
+                                "--no-terminal".to_string(),
+                                "--msg-level=all=no".to_string(),
+                            ];
+                            if let Some(code) = sub_code {
+                                args.extend([
+                                    format!("--ytdl-raw-options=write-subs=,write-auto-sub=,sub-langs={}.*", code),
+                                    "--sub-visibility=yes".to_string(),
+                                    "--sub-auto=all".to_string(),
+                                    "--sid=1".to_string(),
+                                ]);
+                            }
+                            
+                            log(&format!("MAIN: Launching mpv with args: {:?}", args));
+                            
+                            let mut child = TokioCommand::new("mpv")
+                                .args(args)
+                                .stdin(Stdio::null())
+                                .stdout(Stdio::null())
+                                .stderr(Stdio::null())
+                                .spawn()
+                                .expect("Failed to spawn mpv");
+                            
+                            let _ = child.wait().await;
+                            log("MAIN: mpv player finished.");
+                            reset_ai_progress();
+                            let _ = TokioCommand::new("pkill").args(["-f", "demucs"]).status().await;
                         }
-                        let _ = tokio::process::Command::new("mpv").args(args).spawn();
+                        Err(e) => {
+                            log(&format!("AI ERROR: {}", e));
+                        }
                     }
-                    Err(e) => {
-                        log(&format!("AI ERROR: {}", e));
-                    }
-                }
+                });
             });
             return;
         }
@@ -354,8 +412,7 @@ pub fn run_single_command(
             framework
                 .data
                 .global
-                .get_mut::<Status>()
-                .unwrap()
+                .get_mut::<Status>().unwrap()
                 .render_image = true;
         }
         ["history", "clear"] => {
@@ -405,7 +462,7 @@ pub fn run_single_command(
             *framework.data.global.get_mut::<Message>().unwrap() =
                 Message::Success(command.clone());
             if let Ok(mut child) =
-                Command::new(&framework.data.global.get::<MainConfig>().unwrap().shell)
+                StdCommand::new(&framework.data.global.get::<MainConfig>().unwrap().shell)
                     .args(["-c", &command])
                     .stdout(Stdio::null())
                     .stderr(Stdio::null())
@@ -418,7 +475,7 @@ pub fn run_single_command(
             let command = command[1..].join(" ");
             *framework.data.global.get_mut::<Message>().unwrap() =
                 Message::Success(command.clone());
-            let _ = Command::new(&framework.data.global.get::<MainConfig>().unwrap().shell)
+            let _ = StdCommand::new(&framework.data.global.get::<MainConfig>().unwrap().shell)
                 .args(["-c", &command])
                 .stdout(Stdio::null())
                 .stderr(Stdio::null())
@@ -690,6 +747,44 @@ pub fn run_single_command(
                 _ => Message::Error(format!("Unknown type `{}`", r#type)),
             }
         }
+        ["internal-pop-menu"] => {
+            let mut data = HashMap::new();
+            data.insert(String::from("type"), Box::new(String::from("pop-internal-menu")) as Box<dyn Any>);
+            framework.message(data);
+        }
+        ["internal-set-quality", video_id, quality] => {
+            let video_id = video_id.to_string();
+            let quality = quality.to_string();
+            let re = Regex::new(r"(\d+)p(\d+)?").unwrap();
+            if let Some(caps) = re.captures(&quality) {
+                let h = &caps[1];
+                let val = if let Some(f) = caps.get(2) {
+                    format!("bestvideo[height<={}][fps<={}]", h, f.as_str())
+                } else {
+                    format!("bestvideo[height<={}]", h)
+                };
+                if let Ok(mut guard) = SELECTED_QUALITY.lock() {
+                    *guard = Some(val);
+                }
+            }
+            run_single_command(&["internal-pop-menu"], framework, terminal);
+        }
+        ["internal-set-subtitle", ..] => {
+            let selection = command[1..].join(" ");
+            if selection == "none" {
+                if let Ok(mut guard) = SELECTED_SUBTITLE.lock() {
+                    *guard = None;
+                }
+            } else {
+                let re = Regex::new(r"\((.*?)\)$").unwrap();
+                if let Some(caps) = re.captures(&selection) {
+                    if let Ok(mut guard) = SELECTED_SUBTITLE.lock() {
+                        *guard = Some(caps[1].to_string());
+                    }
+                }
+            }
+            run_single_command(&["internal-pop-menu"], framework, terminal);
+        }
         _ => {
             if let Some(cmd) = framework
                 .data
@@ -707,37 +802,6 @@ pub fn run_single_command(
         }
     }
 }
-
-const HELLO_WORLDS: &[&str] = &[
-    "printf(\"Hello World\")",
-    "std::cout << \"Hello World\"",
-    "DISPLAY \"Hello World\".    .",
-    "printIn(\"Hello World\")",
-    "disp('Hello World')",
-    "System.Console.WriteLine(\"Hello World\")",
-    "console.lof 'Hello World'",
-    "WriteLn('Hello World')",
-    "print('Hello World')",
-    "main = putStrLn \"Hello World\"",
-    "writeln ('Hello, world.')",
-    "puts 'Hello World'",
-    "print(\"Hello World\")",
-    "db    'Hello World', 10, 0",
-    "cat('Hello World')",
-    "println('Hello World')",
-    "echo \"Hello World\"",
-    "System.out.println(\"Hello World\")",
-    "println('Hello World\")",
-    "printfn \"Hello World\"",
-    "(print \"Hello World\")",
-    "console.log(\"Hello World\")",
-    "BEGIN DISPLAY(\"Hello World\") END.",
-    "print \"Hello World\"",
-    "puts \"Hello World\"",
-    "console.log 'Hello World'",
-    "print *, \"Hello World\"",
-    "<h1>Hello World<\\h1>",
-];
 
 fn help_msg(cmdefines: &CommandsRemapConfig) -> String {
     format!("\x1b[32mYouTube TUI commands\x1b[0m
@@ -800,3 +864,34 @@ fn help_msg(cmdefines: &CommandsRemapConfig) -> String {
 
 \x1b[37mOnly load page and informational commands should be used from command line, the rest can only be used in (`:`) command mode inside the TUI.\x1b[0m", cmdefines.0.iter().map(|(key, value)| format!("   \x1b[33m{: <28}\x1b[0m     `{value}`", key)).collect::<Vec<_>>().join("\n"))
 }
+
+const HELLO_WORLDS: &[&str] = &[
+    "printf(\"Hello World\")",
+    "std::cout << \"Hello World\"",
+    "DISPLAY \"Hello World\".    .",
+    "printIn(\"Hello World\")",
+    "disp('Hello World')",
+    "System.Console.WriteLine(\"Hello World\")",
+    "console.lof 'Hello World'",
+    "WriteLn('Hello World')",
+    "print('Hello World')",
+    "main = putStrLn \"Hello World\"",
+    "writeln ('Hello, world.')",
+    "puts 'Hello World'",
+    "print(\"Hello World\")",
+    "db    'Hello World', 10, 0",
+    "cat('Hello World')",
+    "println('Hello World')",
+    "echo \"Hello World\"",
+    "System.out.println(\"Hello World\")",
+    "println('Hello World\")",
+    "printfn \"Hello World\"",
+    "(print \"Hello World\")",
+    "console.log(\"Hello World\")",
+    "BEGIN DISPLAY(\"Hello World\") END.",
+    "print \"Hello World\"",
+    "puts \"Hello World\"",
+    "console.log 'Hello World'",
+    "print *, \"Hello World\"",
+    "<h1>Hello World<\\h1>",
+];

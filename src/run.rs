@@ -53,7 +53,20 @@ pub fn run(
         )? {
             // do tick changes
             last_tick = Instant::now();
-            // TaskQueue::render_filter(framework, terminal, |item| (*item).type_id() == TypeId::of::<MessageBar>())?;
+            
+            // Check for menu injections
+            let mut inject = false;
+            if let Ok(mut guard) = SHARED_MENU_INJECTION.lock() {
+                if guard.is_some() { inject = true; }
+            }
+            if inject {
+                let menu = SHARED_MENU_INJECTION.lock().unwrap().take().unwrap();
+                let mut data = HashMap::new();
+                data.insert(String::from("type"), Box::new(String::from("set-internal-menu")) as Box<dyn Any>);
+                data.insert(String::from("menu"), Box::new(menu) as Box<dyn Any>);
+                framework.message(data);
+            }
+
             if MessageBar::is_mpv_render(&framework.split_clean().0) || SHARED_AI_PROGRESS.lock().unwrap().active {
                 TaskQueue::render(framework, terminal)?;
             }

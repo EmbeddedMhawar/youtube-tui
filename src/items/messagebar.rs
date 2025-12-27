@@ -3,7 +3,7 @@ use crate::global::functions::secs_display_string;
 use crate::{config::*, global::structs::*};
 use ratatui::{
     layout::Rect,
-    style::{Style, Color},
+    style::Style,
     widgets::{Block, Borders, Paragraph},
 };
 use tui_additions::framework::*;
@@ -25,8 +25,8 @@ impl FrameworkItem for MessageBar {
             return;
         }
 
-        let ai_progress = SHARED_AI_PROGRESS.lock().unwrap();
-        let is_ai_active = ai_progress.active;
+        let ai_progress_guard = SHARED_AI_PROGRESS.lock().unwrap();
+        let is_ai_active = ai_progress_guard.active;
 
         #[cfg(feature = "mpv")]
         {
@@ -63,7 +63,7 @@ impl FrameworkItem for MessageBar {
                         " ".repeat(duration_s.len() - playerhead_s.len())
                     );
                 }
-                let percentage = if duration > 0 { (playerhead * 100 / duration).to_string() } else { "0".to_string() };
+                let percentage = (playerhead * 100 / duration).to_string();
 
                 let right_chunk = format!(
                     "{playerhead_s}/{duration_s} {}[{percentage}%]",
@@ -78,7 +78,7 @@ impl FrameworkItem for MessageBar {
                         let mut seeker_len = length - total_len - 4;
                         let seeker_pad = if seeker_len > 10 { seeker_len / 10 } else { 0 };
                         seeker_len -= seeker_pad * 2;
-                        let seeker_pos = if duration > 0 { (seeker_len - 1) * playerhead as usize / duration as usize } else { 0 };
+                        let seeker_pos = (seeker_len - 1) * playerhead as usize / duration as usize;
                         format!(
                             "{left_chunk} {}├{}-{}┤{} {right_chunk}",
                             " ".repeat(seeker_pad),
@@ -111,23 +111,19 @@ impl FrameworkItem for MessageBar {
             .command_capture;
 
         // display with different border style according to type of message and config
-        let mut block = Block::default()
+        let block = Block::default()
             .borders(Borders::ALL)
-            .border_type(appearance.borders);
-        
-        let border_color = if command_capture.is_some() {
-            appearance.colors.command_capture
-        } else if is_ai_active {
-            Color::Yellow
-        } else {
-            match message {
-                Message::None => appearance.colors.outline,
-                Message::Success(_) => appearance.colors.message_success_outline,
-                Message::Error(_) => appearance.colors.message_error_outline,
-                Message::Message(_) | Message::Mpv(_) => appearance.colors.message_outline,
-            }
-        };
-        block = block.border_style(Style::default().fg(border_color));
+            .border_type(appearance.borders)
+            .border_style(Style::default().fg(if command_capture.is_some() {
+                appearance.colors.command_capture
+            } else {
+                match message {
+                    Message::None => appearance.colors.outline,
+                    Message::Success(_) => appearance.colors.message_success_outline,
+                    Message::Error(_) => appearance.colors.message_error_outline,
+                    Message::Message(_) | Message::Mpv(_) => appearance.colors.message_outline,
+                }
+            }));
 
         // if keys are captured, render the textlist instead of the message text, and exits the
         // function
@@ -146,8 +142,9 @@ impl FrameworkItem for MessageBar {
         }
 
         let content = if is_ai_active {
-            let eta = ai_progress.eta_seconds.map(|s| format!(" (ETA: {}s)", s)).unwrap_or_default();
-            format!("[AI]: {} / Chunk {} of {}{}", ai_progress.label, ai_progress.current_chunk, ai_progress.total_chunks, eta)
+            let eta = ai_progress_guard.eta_seconds.map(|s| format!(" (ETA: {}s)", s)).unwrap_or_default();
+            let ratio = ai_progress_guard.ratio.map(|r| format!(" | Speed: {:.2}x", r)).unwrap_or_default();
+            format!("[AI]: {} | Chunk {} of {}{}{}", ai_progress_guard.label, ai_progress_guard.current_chunk, ai_progress_guard.total_chunks, eta, ratio)
         } else {
             message.to_string(
                 &framework

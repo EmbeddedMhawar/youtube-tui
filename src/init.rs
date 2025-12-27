@@ -30,15 +30,13 @@ pub fn init(
 ) -> Result<(), Box<dyn Error>> {
     LocalStore::init();
     let home_dir = home_dir().unwrap();
+    
     RUNTIME
         .set(Builder::new_current_thread().enable_all().build().unwrap())
         .unwrap();
 
     // creating files
     [
-        // ".cache/youtube-tui/thumbnails/",
-        // ".cache/youtube-tui/info/",
-        // ".cache/youtube-tui/channels/",
         ".local/share/youtube-tui/thumbnails/",
         ".local/share/youtube-tui/info/",
         ".local/share/youtube-tui/saved/",
@@ -50,8 +48,6 @@ pub fn init(
             fs::create_dir_all(dir).unwrap();
         }
     });
-
-    // init_move();
 
     load_configs(&mut framework.split_clean().0)?;
 
@@ -83,12 +79,6 @@ pub fn init(
         .global
         .insert::<SearchHistory>(SearchHistory::load());
     framework.data.global.insert::<WatchHistory>(watchhistory);
-    /*
-    framework
-        .data
-        .global
-        .insert::<ChannelHistory>(ChannelHistory::load());
-    */
     framework
         .data
         .global

@@ -12,12 +12,15 @@ pub struct AiProgress {
     pub current_chunk: usize,
     pub total_chunks: usize,
     pub eta_seconds: Option<u64>,
+    pub ratio: Option<f32>,
     pub active: bool,
 }
 
 lazy_static! {
     pub static ref SHARED_AI_PROGRESS: Arc<Mutex<AiProgress>> = Arc::new(Mutex::new(AiProgress::default()));
     pub static ref SELECTED_SUBTITLE: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+    pub static ref SELECTED_QUALITY: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+    pub static ref SHARED_MENU_INJECTION: Arc<Mutex<Option<Vec<(String, String)>>>> = Arc::new(Mutex::new(None));
 }
 
 /// a struct for storing different info, currently only stores one info
