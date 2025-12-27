@@ -1,13 +1,13 @@
 [package]
-name = "youtube-tui"
+name = "youtube-tui-ai"
 version = "0.9.3"
-authors = ["Siriusmart <siriusmart@tuta.io>"]
+authors = ["Siriusmart <siriusmart@tuta.io>", "EmbeddedMhawar"]
 edition = "2021"
-description = "An aesthetically pleasing YouTube TUI written in Rust"
+description = "An aesthetically pleasing YouTube TUI with AI vocal isolation (Remove Music) and TCP streaming"
 documentation = "https://docs.rs/youtube-tui"
 readme = "README.md"
 homepage = "https://tui.siri.ws/youtube"
-repository = "https://github.com/siriusmart/youtube-tui"
+repository = "https://github.com/EmbeddedMhawar/youtube-tui"
 license = "GPL-3.0-or-later"
 keywords = ["cli", "terminal", "youtube", "tui"]
 categories =["command-line-interface", "command-line-utilities"]
