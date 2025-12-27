@@ -292,19 +292,25 @@ pub async fn start_ai_separation(video_id: String, mode: String) -> Result<u16> 
 
     tokio::spawn(async move {
         log("WORKER: Started");
-        let start_time = Instant::now();
+        let mut current_quota = 600; // Start stronger
+        let mut current_threads = 6;
+
         for (i, chunk_path) in entries.iter().enumerate() {
+            let chunk_start = Instant::now();
             let chunk_name = chunk_path.file_stem().unwrap().to_str().unwrap();
             let stem_name = if mode == "vocals" { "vocals.wav" } else { "no_vocals.wav" };
             let separated_wav = out_chunks_dir_clone.join("htdemucs").join(chunk_name).join(stem_name);
 
             if !separated_wav.exists() {
-                log(&format!("WORKER: Separating chunk {}/{} ({})...", i+1, total, chunk_name));
+                log(&format!("WORKER: Separating chunk {}/{} ({})... Quota: {}%, Threads: {}", i+1, total, chunk_name, current_quota, current_threads));
                 let _ = Command::new("systemd-run")
                     .args([
-                        "--user", "--scope", "-p", "MemoryMax=10G", "-p", "CPUQuota=400%",
-                        "-E", "OMP_NUM_THREADS=8", "-E", "MKL_NUM_THREADS=8",
-                        "-E", "OPENBLAS_NUM_THREADS=8", "-E", "VECLIB_MAXIMUM_THREADS=8",
+                        "--user", "--scope", "-p", "MemoryMax=10G", 
+                        "-p", &format!("CPUQuota={}%", current_quota),
+                        "-E", &format!("OMP_NUM_THREADS={}", current_threads),
+                        "-E", &format!("MKL_NUM_THREADS={}", current_threads),
+                        "-E", &format!("OPENBLAS_NUM_THREADS={}", current_threads),
+                        "-E", &format!("VECLIB_MAXIMUM_THREADS={}", current_threads),
                         demucs_bin.to_str().unwrap(), "-n", "htdemucs", "--two-stems=vocals",
                         "--segment", "7", "--shifts", "0", "--overlap", "0.1", "-d", "cpu", "-j", "1",
                         "-o", out_chunks_dir_clone.to_str().unwrap(), chunk_path.to_str().unwrap()
@@ -316,7 +322,6 @@ pub async fn start_ai_separation(video_id: String, mode: String) -> Result<u16> 
             }
 
             if separated_wav.exists() {
-                // log(&format!("WORKER: Converting chunk {} to PCM...", i+1));
                 let output = Command::new("ffmpeg")
                     .args(["-y", "-hide_banner", "-loglevel", "error", "-i", separated_wav.to_str().unwrap(), "-f", "s16le", "-acodec", "pcm_s16le", "-ar", "44100", "-ac", "2", "-"])
                     .stdin(Stdio::null())
@@ -324,7 +329,6 @@ pub async fn start_ai_separation(video_id: String, mode: String) -> Result<u16> 
                     .stderr(Stdio::null())
                     .output()
                     .await;
-
 
                 if let Ok(output) = output {
                     if let Ok(mut f) = fs::OpenOptions::new().create(true).append(true).open(&playback_file_clone) {
@@ -334,26 +338,28 @@ pub async fn start_ai_separation(video_id: String, mode: String) -> Result<u16> 
                 }
             }
 
-            // Update Progress & Time Prediction
-            let elapsed = start_time.elapsed().as_secs_f32();
-            let avg_time_per_chunk = elapsed / (i + 1) as f32;
-            let ratio = 30.0 / avg_time_per_chunk;
+            // DYNAMIC CPU LOGIC based on LAST chunk
+            let chunk_elapsed = chunk_start.elapsed().as_secs_f32();
+            let ratio = 30.0 / chunk_elapsed;
             
-            let (label, eta) = if i + 1 < 2 {
-                let remaining_for_buffer = (2 - (i + 1)) as f32;
-                ("Wait for Playback...".to_string(), (avg_time_per_chunk * remaining_for_buffer) as u64)
-            } else {
-                let remaining_chunks = (total - (i + 1)) as f32;
-                ("Separating...".to_string(), (avg_time_per_chunk * remaining_chunks) as u64)
-            };
+            // Adjust for next chunk based on 1.5x target
+            if ratio < 1.40 {
+                // Too slow, increase power aggressively
+                current_quota = (current_quota + 150).min(800);
+                current_threads = (current_threads + 2).min(8);
+            } else if ratio > 1.60 {
+                // Too fast, save power
+                current_quota = (current_quota - 100).max(200);
+                current_threads = (current_threads - 1).max(2);
+            }
 
             {
                 if let Ok(mut progress) = SHARED_AI_PROGRESS.lock() {
                     progress.current_chunk = i + 1;
                     progress.total_chunks = total;
-                    progress.eta_seconds = Some(eta);
+                    progress.eta_seconds = Some(((total - (i + 1)) as f32 * chunk_elapsed) as u64);
                     progress.ratio = Some(ratio);
-                    progress.label = label;
+                    progress.label = if i + 1 < 2 { "Wait for Playback...".to_string() } else { "Separating...".to_string() };
                 }
             }
         }
