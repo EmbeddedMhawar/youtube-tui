@@ -14,6 +14,7 @@ use chrono;
 use crate::global::structs::{SHARED_AI_PROGRESS, SELECTED_SUBTITLE, SELECTED_QUALITY};
 
 const CACHE_DIR: &str = "~/.cache/walker-yt-rs"; 
+const SHM_DIR: &str = "/dev/shm/walker-yt-rs";
 const DEMUCS_BIN: &str = "~/.local/share/walker-yt/venv/bin/demucs";
 const YT_DLP_BIN: &str = "~/.local/bin/yt-dlp";
 
@@ -217,12 +218,18 @@ pub fn reset_ai_progress() {
 
 pub async fn start_ai_separation(video_id: String, mode: String) -> Result<u16> {
     log(&format!("AI: Starting separation for {} (mode: {})", video_id, mode));
-    reset_ai_progress(); // Ensure clean start
-    let cache_dir = expand_path(CACHE_DIR);
-    let work_dir = cache_dir.join(format!("proc_{}", video_id));
+    reset_ai_progress(); 
+    
+    let cache_root = expand_path(CACHE_DIR);
+    let shm_root = PathBuf::from(SHM_DIR);
+    
+    let perm_dir = cache_root.join(format!("proc_{}", video_id));
+    let work_dir = shm_root.join(format!("proc_{}", video_id));
+    
+    fs::create_dir_all(&perm_dir)?;
     fs::create_dir_all(&work_dir)?;
 
-    let audio_path = work_dir.join("input.m4a");
+    let audio_path = perm_dir.join("input.m4a");
     let chunks_dir = work_dir.join("chunks");
     let out_chunks_dir = work_dir.join("out_chunks");
     let playback_file = work_dir.join("live_audio.pcm");
@@ -254,19 +261,11 @@ pub async fn start_ai_separation(video_id: String, mode: String) -> Result<u16> 
             log("AI: Download FAILED");
             return Err(anyhow!("Download failed")); 
         }
-    } else {
-        log("AI: Audio file already cached.");
     }
 
-    {
-        if let Ok(mut progress) = SHARED_AI_PROGRESS.lock() {
-            progress.label = "Wait for Playback...".to_string();
-        }
-    }
-
-    log("AI: Splitting audio into 30s chunks...");
+    log("AI: Splitting audio into 60s chunks...");
     let split_status = Command::new("ffmpeg")
-        .args(["-y", "-hide_banner", "-loglevel", "error", "-i", audio_path.to_str().unwrap(), "-f", "segment", "-segment_time", "30", "-c", "copy", chunks_dir.join("chunk_%03d.m4a").to_str().unwrap()])
+        .args(["-y", "-hide_banner", "-loglevel", "error", "-i", audio_path.to_str().unwrap(), "-f", "segment", "-segment_time", "60", "-c", "copy", chunks_dir.join("chunk_%03d.m4a").to_str().unwrap()])
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -285,33 +284,67 @@ pub async fn start_ai_separation(video_id: String, mode: String) -> Result<u16> 
     entries.sort();
 
     let total = entries.len();
-    log(&format!("AI: Found {} chunks to process.", total));
+    log(&format!("AI: Found {} chunks (60s) to process.", total));
+    
+    // Set initial progress
+    if let Ok(mut progress) = SHARED_AI_PROGRESS.lock() {
+        progress.total_chunks = total;
+        progress.label = "Initializing...".to_string();
+    }
+
     let playback_file_clone = playback_file.clone();
     let demucs_bin = expand_path(DEMUCS_BIN);
     let out_chunks_dir_clone = out_chunks_dir.clone();
+    let perm_dir_clone = perm_dir.clone();
 
     tokio::spawn(async move {
         log("WORKER: Started");
-        let mut current_quota = 800; // Maximize for 8 cores
-        let mut threads_per_job = 4; // Total 8 threads with -j 2
-
-        for (i, chunk_path) in entries.iter().enumerate() {
+        let mut current_quota = 800; 
+        let mut threads_per_job = 4;
+        
+        let batch_size = 2;
+        let mut i = 0;
+        
+        while i < total {
             let chunk_start = Instant::now();
-            let chunk_name = chunk_path.file_stem().unwrap().to_str().unwrap();
-            let stem_name = if mode == "vocals" { "vocals.wav" } else { "no_vocals.wav" };
-            let separated_wav = out_chunks_dir_clone.join("htdemucs").join(chunk_name).join(stem_name);
+            let mut batch_chunks = Vec::new();
+            
+            for j in 0..batch_size {
+                if i + j < total {
+                    batch_chunks.push(i + j);
+                }
+            }
 
-            let was_cached = separated_wav.exists();
-            log(&format!("WORKER: Chunk {}/{} - Cached: {} - Checking path: {:?}", i+1, total, was_cached, separated_wav));
-            if !was_cached {
-                if !demucs_bin.exists() {
-                    log(&format!("WORKER: ERROR - demucs binary not found at {:?}", demucs_bin));
-                    continue;
+            let stem_name = if mode == "vocals" { "vocals.wav" } else { "no_vocals.wav" };
+            let mut needs_processing = Vec::new();
+            
+            for &idx in &batch_chunks {
+                let chunk_path = &entries[idx];
+                let chunk_name = chunk_path.file_stem().unwrap().to_str().unwrap();
+                let perm_wav = perm_dir_clone.join("htdemucs").join(chunk_name).join(stem_name);
+                let work_wav = out_chunks_dir_clone.join("htdemucs").join(chunk_name).join(stem_name);
+                
+                if perm_wav.exists() {
+                    log(&format!("WORKER: Chunk {} CACHED. Restoring...", idx + 1));
+                    let _ = fs::create_dir_all(work_wav.parent().unwrap());
+                    let _ = fs::copy(&perm_wav, &work_wav);
+                } else {
+                    needs_processing.push(idx);
+                }
+            }
+
+            if !needs_processing.is_empty() {
+                let proc_paths: Vec<_> = needs_processing.iter().map(|&idx| entries[idx].to_str().unwrap()).collect();
+                log(&format!("WORKER: Separating batch: {:?} | Quota: {}%", needs_processing, current_quota));
+                
+                // Update label with detailed status
+                if let Ok(mut progress) = SHARED_AI_PROGRESS.lock() {
+                    progress.label = format!("Separating Batch ({} cores)...", threads_per_job * 2);
                 }
 
                 let cmd_args = [
                     "--user", "--scope", "--quiet",
-                    "-p", "MemoryMax=10G", 
+                    "-p", "MemoryMax=12G", 
                     "-p", &format!("CPUQuota={}%", current_quota),
                     "-E", "OMP_WAIT_POLICY=PASSIVE",
                     "-E", &format!("OMP_NUM_THREADS={}", threads_per_job),
@@ -320,60 +353,63 @@ pub async fn start_ai_separation(video_id: String, mode: String) -> Result<u16> 
                     "-E", &format!("VECLIB_MAXIMUM_THREADS={}", threads_per_job),
                     demucs_bin.to_str().unwrap(), "-n", "htdemucs", "--two-stems=vocals",
                     "--segment", "7", "--shifts", "0", "--overlap", "0.1", "-d", "cpu", "-j", "2",
-                    "-o", out_chunks_dir_clone.to_str().unwrap(), chunk_path.to_str().unwrap()
+                    "-o", out_chunks_dir_clone.to_str().unwrap()
                 ];
                 
+                let mut full_args = cmd_args.to_vec();
+                full_args.extend(proc_paths);
+
                 let output = Command::new("/usr/bin/systemd-run")
-                    .args(&cmd_args)
-                    .stdout(Stdio::piped())
+                    .args(&full_args)
+                    .stdout(Stdio::null())
                     .stderr(Stdio::piped())
                     .output()
                     .await;
+                
+                if let Ok(out) = output {
+                    if !out.status.success() {
+                        let err_msg = String::from_utf8_lossy(&out.stderr);
+                        log(&format!("WORKER: systemd-run FAILED: {}", err_msg.trim()));
+                    }
+                }
+                
+                // Sync to permanent cache
+                for &idx in &needs_processing {
+                    let chunk_name = entries[idx].file_stem().unwrap().to_str().unwrap();
+                    let work_wav = out_chunks_dir_clone.join("htdemucs").join(chunk_name).join(stem_name);
+                    let perm_wav = perm_dir_clone.join("htdemucs").join(chunk_name).join(stem_name);
+                    if work_wav.exists() {
+                        let _ = fs::create_dir_all(perm_wav.parent().unwrap());
+                        let _ = fs::copy(&work_wav, &perm_wav);
+                    }
+                }
+            }
 
-                match output {
-                    Ok(out) => {
-                        if !out.status.success() {
-                            let err_msg = String::from_utf8_lossy(&out.stderr);
-                            let out_msg = String::from_utf8_lossy(&out.stdout);
-                            log(&format!("WORKER: systemd-run FAILED (code {:?}) for chunk {}: {}\nSTDOUT: {}", out.status.code(), chunk_name, err_msg.trim(), out_msg.trim()));
-                        } else {
-                            log(&format!("WORKER: systemd-run SUCCESS for chunk {}", chunk_name));
+            // Post-process batch into playback file
+            for &idx in &batch_chunks {
+                let chunk_name = entries[idx].file_stem().unwrap().to_str().unwrap();
+                let work_wav = out_chunks_dir_clone.join("htdemucs").join(chunk_name).join(stem_name);
+                
+                if work_wav.exists() {
+                    let output = Command::new("ffmpeg")
+                        .args(["-y", "-hide_banner", "-loglevel", "error", "-i", work_wav.to_str().unwrap(), "-f", "s16le", "-acodec", "pcm_s16le", "-ar", "44100", "-ac", "2", "-"])
+                        .output()
+                        .await;
+
+                    if let Ok(output) = output {
+                        if let Ok(mut f) = fs::OpenOptions::new().create(true).append(true).open(&playback_file_clone) {
+                            let _ = f.write_all(&output.stdout);
+                            let _ = f.sync_all();
                         }
                     }
-                    Err(e) => {
-                        log(&format!("WORKER: CRITICAL ERROR - Failed to spawn systemd-run: {}", e));
-                    }
                 }
             }
 
-            if separated_wav.exists() {
-                let output = Command::new("ffmpeg")
-                    .args(["-y", "-hide_banner", "-loglevel", "error", "-i", separated_wav.to_str().unwrap(), "-f", "s16le", "-acodec", "pcm_s16le", "-ar", "44100", "-ac", "2", "-"])
-                    .stdin(Stdio::null())
-                    .stdout(Stdio::piped())
-                    .stderr(Stdio::null())
-                    .output()
-                    .await;
-
-                if let Ok(output) = output {
-                    if let Ok(mut f) = fs::OpenOptions::new().create(true).append(true).open(&playback_file_clone) {
-                        let _ = f.write_all(&output.stdout);
-                        let _ = f.sync_all();
-                    }
-                }
-            }
-
-            // DYNAMIC CPU LOGIC & METRICS
-            let chunk_elapsed = chunk_start.elapsed().as_secs_f32();
-            let mut ratio = None;
-            let mut eta = None;
-
-            if !was_cached {
-                let r = 30.0 / chunk_elapsed;
-                ratio = Some(r);
-                eta = Some(((total - (i + 1)) as f32 * chunk_elapsed) as u64);
-
-                // Adjust for next chunk based on 1.5x target
+            let was_cached_batch = needs_processing.is_empty();
+            let batch_elapsed = chunk_start.elapsed().as_secs_f32();
+            
+            if !was_cached_batch {
+                let r = (batch_chunks.len() as f32 * 60.0) / batch_elapsed;
                 if r < 1.40 {
                     current_quota = (current_quota + 100).min(800);
                     threads_per_job = (threads_per_job + 1).min(4);
@@ -381,41 +417,55 @@ pub async fn start_ai_separation(video_id: String, mode: String) -> Result<u16> 
                     current_quota = (current_quota - 100).max(400);
                     threads_per_job = (threads_per_job - 1).max(2);
                 }
-            }
 
-            {
                 if let Ok(mut progress) = SHARED_AI_PROGRESS.lock() {
-                    progress.current_chunk = i + 1;
+                    progress.current_chunk = i + batch_chunks.len();
                     progress.total_chunks = total;
-                    if !was_cached {
-                        progress.eta_seconds = eta;
-                        progress.ratio = ratio;
-                    }
-                    progress.label = if i + 1 < 2 && !was_cached { 
-                        "Wait for Playback...".to_string() 
-                    } else if was_cached {
-                        "Processing (Cached)...".to_string()
-                    } else { 
-                        "Separating...".to_string() 
-                    };
+                    progress.ratio = Some(r);
+                    progress.eta_seconds = Some(((total - (i + batch_chunks.len())) as f32 * (60.0 / r)) as u64);
+                    progress.label = "Separating (Batched)...".to_string();
+                }
+            } else {
+                if let Ok(mut progress) = SHARED_AI_PROGRESS.lock() {
+                    progress.current_chunk = i + batch_chunks.len();
+                    progress.total_chunks = total;
+                    progress.label = "Processing (Cached)...".to_string();
                 }
             }
+
+            i += batch_size;
         }
         
         reset_ai_progress();
         log("WORKER: Finished");
     });
 
-    log("AI: Waiting for initial audio buffer (2 chunks)...");
+    log("AI: Waiting for initial audio buffer (4 chunks / 4min)...");
     let start_wait = Instant::now();
     loop {
-        if playback_file.exists() && fs::metadata(&playback_file)?.len() >= 10_000_000 { 
+        let current_size = playback_file.exists().then(|| fs::metadata(&playback_file).ok().map(|m| m.len())).flatten().unwrap_or(0);
+        let target_size = 40_000_000; // ~4 chunks of 60s
+        
+        if current_size >= target_size { 
             log("AI: Initial buffer READY.");
             break; 
         }
-        if start_wait.elapsed() > Duration::from_secs(240) {
+
+        // Update ETA for the buffer wait
+        if let Ok(mut progress) = SHARED_AI_PROGRESS.lock() {
+            let remaining_bytes = target_size.saturating_sub(current_size);
+            // Assume 1.2x speed if we don't have a ratio yet
+            let speed = progress.ratio.unwrap_or(1.2);
+            let bytes_per_sec = 176400.0 * speed;
+            let wait_eta = (remaining_bytes as f32 / bytes_per_sec) as u64;
+            
+            progress.label = format!("Buffer: {}% | Wait for 4 chunks...", (current_size * 100 / target_size));
+            progress.eta_seconds = Some(wait_eta);
+        }
+
+        if start_wait.elapsed() > Duration::from_secs(480) { // 8 minutes timeout
             log("AI: BUFFER TIMEOUT.");
-            if playback_file.exists() && fs::metadata(&playback_file)?.len() > 0 { 
+            if current_size > 0 { 
                 log("AI: Buffer timeout reached but some data available, proceeding anyway.");
                 break; 
             }

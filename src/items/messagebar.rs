@@ -146,7 +146,12 @@ impl FrameworkItem for MessageBar {
             if let Ok(guard) = ai_progress_res {
                 let eta = guard.eta_seconds.map(|s| format!(" (ETA: {}s)", s)).unwrap_or_default();
                 let ratio = guard.ratio.map(|r| format!(" | Speed: {:.2}x", r)).unwrap_or_default();
-                format!("[AI]: {} | Chunk {} of {}{}{}", guard.label, guard.current_chunk, guard.total_chunks, eta, ratio)
+                let progress = if guard.total_chunks > 0 {
+                    format!(" | Chunk {} of {}", guard.current_chunk, guard.total_chunks)
+                } else {
+                    String::new()
+                };
+                format!("[AI]: {}{}{}{}", guard.label, progress, eta, ratio)
             } else {
                 String::from("AI Progress Lock Error")
             }
