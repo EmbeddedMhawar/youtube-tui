@@ -32,7 +32,7 @@ pub fn init(
     let home_dir = home_dir().unwrap();
     
     RUNTIME
-        .set(Builder::new_current_thread().enable_all().build().unwrap())
+        .set(Builder::new_multi_thread().worker_threads(4).enable_all().build().unwrap())
         .unwrap();
 
     // creating files
@@ -135,8 +135,6 @@ pub fn load_configs(framework: &mut FrameworkClean) -> Result<(), Box<dyn Error>
 
     // inserting data
     let main_config = *MainConfig::load(WriteConfig::Try)?;
-
-    SearchProviderWrapper::init();
 
     unsafe {
         if MAIN_CONFIG.get().is_some() {

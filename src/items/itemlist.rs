@@ -412,15 +412,27 @@ impl FrameworkItem for ItemList {
                 self.items = history.0.clone().into_iter().rev().collect();
             }
             Page::Search(search) => {
-                self.items = SearchProviderWrapper::search(search)?
-                    .into_iter()
-                    .map(|item| Item::from_search_item(item, image_index))
-                    .collect();
-                if !self.items.is_empty() {
-                    self.items.push(Item::Page(true));
-                }
-                if search.page != 1 {
-                    self.items.insert(0, Item::Page(false));
+                log(&format!("ITEMLIST: Loading search results for query: {}", search.query));
+                match SearchProviderWrapper::search(search) {
+                    Ok(items) => {
+                        log(&format!("ITEMLIST: Found {} search results", items.len()));
+                        self.items = items
+                            .into_iter()
+                            .map(|item| Item::from_search_item(item, image_index))
+                            .collect();
+                        if !self.items.is_empty() {
+                            self.items.push(Item::Page(true));
+                        }
+                        if search.page != 1 {
+                            self.items.insert(0, Item::Page(false));
+                        }
+                    }
+                    Err(e) => {
+                        log(&format!("ITEMLIST: Search FAILED: {}", e));
+                        *framework.data.global.get_mut::<Message>().unwrap() =
+                            Message::Error(format!("Search failed: {}", e));
+                        self.items = Vec::new();
+                    }
                 }
             }
             _ => unreachable!("item `ItemList` cannot be used in `{page:?}`"),

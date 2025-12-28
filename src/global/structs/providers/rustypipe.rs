@@ -294,7 +294,8 @@ impl SearchProviderTrait for RustyPipeWrapper {
             SearchFilterType::Channel => Some(ItemType::Channel),
         };
 
-        let res = RUNTIME.get().unwrap().block_on(
+        let rt = RUNTIME.get().ok_or("Tokio runtime not initialized")?;
+        let res = rt.block_on(
             self.0.query().search_filter(
                 filters.query.clone(),
                 &SearchFilter::new()
@@ -328,9 +329,8 @@ impl SearchProviderTrait for RustyPipeWrapper {
         id: &str,
     ) -> Result<crate::global::common::channel::Channel, Box<dyn std::error::Error>> {
         let q = self.0.query();
-        let (info, artist) = RUNTIME
-            .get()
-            .unwrap()
+        let rt = RUNTIME.get().ok_or("Tokio runtime not initialized")?;
+        let (info, artist) = rt
             .block_on(async { futures::join!(q.channel_info(id), q.music_artist(id, false)) });
 
         let info = info?;
@@ -365,7 +365,8 @@ impl SearchProviderTrait for RustyPipeWrapper {
     fn trending(
         &self,
     ) -> Result<Vec<crate::global::common::CommonVideo>, Box<dyn std::error::Error>> {
-        let res = RUNTIME.get().unwrap().block_on(self.0.query().trending())?;
+        let rt = RUNTIME.get().ok_or("Tokio runtime not initialized")?;
+        let res = rt.block_on(self.0.query().trending())?;
 
         Ok(res.into_iter().map(video_item_convert).collect())
     }
@@ -378,9 +379,8 @@ impl SearchProviderTrait for RustyPipeWrapper {
         &self,
         id: &str,
     ) -> Result<crate::global::common::universal::Playlist, Box<dyn std::error::Error>> {
-        let res = RUNTIME
-            .get()
-            .unwrap()
+        let rt = RUNTIME.get().ok_or("Tokio runtime not initialized")?;
+        let res = rt
             .block_on(self.0.query().playlist(id))?;
 
         Ok(Playlist {
@@ -446,9 +446,8 @@ impl SearchProviderTrait for RustyPipeWrapper {
     }
 
     fn channel_videos(&self, id: &str) -> Result<Vec<CommonVideo>, Box<dyn std::error::Error>> {
-        let res = RUNTIME
-            .get()
-            .unwrap()
+        let rt = RUNTIME.get().ok_or("Tokio runtime not initialized")?;
+        let res = rt
             .block_on(self.0.query().channel_videos(id))?;
 
         Ok(res
@@ -467,9 +466,8 @@ impl SearchProviderTrait for RustyPipeWrapper {
         &self,
         id: &str,
     ) -> Result<Vec<CommonPlaylist>, Box<dyn std::error::Error>> {
-        let res = RUNTIME
-            .get()
-            .unwrap()
+        let rt = RUNTIME.get().ok_or("Tokio runtime not initialized")?;
+        let res = rt
             .block_on(self.0.query().channel_playlists(id))?;
 
         Ok(res

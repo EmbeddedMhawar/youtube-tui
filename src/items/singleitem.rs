@@ -137,7 +137,7 @@ impl SingleVideoItem {
                         "{}/watch?v={}",
                         mainconfig.invidious_instance, video_item.id
                     ),
-                    Provider::YouTube => format!("'https://youtu.be/{}'", video_item.id),
+                    Provider::YouTube => format!("https://youtu.be/{}", video_item.id),
                 },
             ),
             (String::from("id"), video_item.id.clone()),
@@ -147,7 +147,7 @@ impl SingleVideoItem {
                     Provider::Invidious => {
                         format!("{}/embed/{}", mainconfig.invidious_instance, video_item.id)
                     }
-                    Provider::YouTube => format!("'https://youtube.com/embed/{}'", video_item.id),
+                    Provider::YouTube => format!("https://youtube.com/embed/{}", video_item.id),
                 },
             ),
             (String::from("channel-id"), video_item.channel_id.clone()),

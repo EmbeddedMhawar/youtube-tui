@@ -25,77 +25,78 @@ impl FrameworkItem for MessageBar {
             return;
         }
 
-        let ai_progress_guard = SHARED_AI_PROGRESS.lock().unwrap();
-        let is_ai_active = ai_progress_guard.active;
+        let ai_progress_res = SHARED_AI_PROGRESS.lock();
+        let is_ai_active = ai_progress_res.as_ref().map(|p| p.active).unwrap_or(false);
 
         #[cfg(feature = "mpv")]
         {
-            let mpv = framework.data.global.get::<MpvWrapper>().unwrap();
-            if !is_ai_active && Self::is_mpv_render(framework) {
-                let mut label = mpv.property("media-title".to_string()).unwrap();
-                if let Some((name, ext)) = label.rsplit_once('.') {
-                    if ext.len() < 5
-                        && !name.len() > 13
-                        && &name[name.len() - 1..name.len()] == "]"
-                        && name[name.len() - 12..name.len() - 1]
-                            .chars()
-                            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_'))
-                        && &name[name.len() - 13..name.len() - 12] == "["
-                    {
-                        label = name[0..name.len() - 13].to_string();
+            if let Some(mpv) = framework.data.global.get::<MpvWrapper>() {
+                if !is_ai_active && Self::is_mpv_render(framework) {
+                    let mut label = mpv.property("media-title".to_string()).unwrap_or_else(|| "Unknown".to_string());
+                    if let Some((name, ext)) = label.rsplit_once('.') {
+                        if ext.len() < 5
+                            && name.len() > 13
+                            && &name[name.len() - 1..name.len()] == "]"
+                            && name[name.len() - 12..name.len() - 1]
+                                .chars()
+                                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_'))
+                            && &name[name.len() - 13..name.len() - 12] == "["
+                        {
+                            label = name[0..name.len() - 13].to_string();
+                        }
                     }
-                }
-                let duration = mpv
-                    .property("duration".to_string())
-                    .unwrap_or_default()
-                    .parse::<f64>()
-                    .unwrap() as u64;
-                let duration_s = secs_display_string(duration as u32);
-                let playerhead = mpv
-                    .property("time-pos".to_string())
-                    .unwrap_or_default()
-                    .parse::<f64>()
-                    .unwrap() as u64;
-                let mut playerhead_s = secs_display_string(playerhead as u32);
-                if playerhead_s.len() != duration_s.len() {
-                    playerhead_s = format!(
-                        "{}{playerhead_s}",
-                        " ".repeat(duration_s.len() - playerhead_s.len())
+                    let duration = mpv
+                        .property("duration".to_string())
+                        .unwrap_or_default()
+                        .parse::<f64>()
+                        .unwrap_or(0.0) as u64;
+                    let duration_s = secs_display_string(duration as u32);
+                    let playerhead = mpv
+                        .property("time-pos".to_string())
+                        .unwrap_or_default()
+                        .parse::<f64>()
+                        .unwrap_or(0.0) as u64;
+                    let mut playerhead_s = secs_display_string(playerhead as u32);
+                    if playerhead_s.len() != duration_s.len() {
+                        playerhead_s = format!(
+                            "{}{playerhead_s}",
+                            " ".repeat(duration_s.len() - playerhead_s.len())
+                        );
+                    }
+                    let percentage = if duration > 0 { (playerhead * 100 / duration).to_string() } else { "0".to_string() };
+
+                    let right_chunk = format!(
+                        "{playerhead_s}/{duration_s} {}[{percentage}%]",
+                        " ".repeat(3 - percentage.len())
                     );
+                    let left_chunk = format!("[Now Playing]: {label}");
+                    let length = area.width as usize - 2;
+                    let total_len = right_chunk.len() + left_chunk.len();
+
+                    *framework.data.global.get_mut::<Message>().unwrap() =
+                        Message::Mpv(if length > total_len + 6 {
+                            let mut seeker_len = length - total_len - 4;
+                            let seeker_pad = if seeker_len > 10 { seeker_len / 10 } else { 0 };
+                            seeker_len -= seeker_pad * 2;
+                            let seeker_pos = if duration > 0 { (seeker_len - 1) * playerhead as usize / duration as usize } else { 0 };
+                            format!(
+                                "{left_chunk} {}├{}-{}┤{} {right_chunk}",
+                                " ".repeat(seeker_pad),
+                                "─".repeat(seeker_pos),
+                                "─".repeat(seeker_len - seeker_pos - 1),
+                                " ".repeat(seeker_pad)
+                            )
+                        } else if length > total_len + 3 {
+                            format!(
+                                "{left_chunk}{}{right_chunk}",
+                                " ".repeat(length - total_len)
+                            )
+                        } else if length > 19 {
+                            left_chunk
+                        } else {
+                            String::from("Not enough width")
+                        });
                 }
-                let percentage = (playerhead * 100 / duration).to_string();
-
-                let right_chunk = format!(
-                    "{playerhead_s}/{duration_s} {}[{percentage}%]",
-                    " ".repeat(3 - percentage.len())
-                );
-                let left_chunk = format!("[Now Playing]: {label}");
-                let length = area.width as usize - 2;
-                let total_len = right_chunk.len() + left_chunk.len();
-
-                *framework.data.global.get_mut::<Message>().unwrap() =
-                    Message::Mpv(if length > total_len + 6 {
-                        let mut seeker_len = length - total_len - 4;
-                        let seeker_pad = if seeker_len > 10 { seeker_len / 10 } else { 0 };
-                        seeker_len -= seeker_pad * 2;
-                        let seeker_pos = (seeker_len - 1) * playerhead as usize / duration as usize;
-                        format!(
-                            "{left_chunk} {}├{}-{}┤{} {right_chunk}",
-                            " ".repeat(seeker_pad),
-                            "─".repeat(seeker_pos),
-                            "─".repeat(seeker_len - seeker_pos - 1),
-                            " ".repeat(seeker_pad)
-                        )
-                    } else if length > total_len + 3 {
-                        format!(
-                            "{left_chunk}{}{right_chunk}",
-                            " ".repeat(length - total_len)
-                        )
-                    } else if length > 19 {
-                        left_chunk
-                    } else {
-                        String::from("Not enough width")
-                    });
             }
         }
 
@@ -142,9 +143,13 @@ impl FrameworkItem for MessageBar {
         }
 
         let content = if is_ai_active {
-            let eta = ai_progress_guard.eta_seconds.map(|s| format!(" (ETA: {}s)", s)).unwrap_or_default();
-            let ratio = ai_progress_guard.ratio.map(|r| format!(" | Speed: {:.2}x", r)).unwrap_or_default();
-            format!("[AI]: {} | Chunk {} of {}{}{}", ai_progress_guard.label, ai_progress_guard.current_chunk, ai_progress_guard.total_chunks, eta, ratio)
+            if let Ok(guard) = ai_progress_res {
+                let eta = guard.eta_seconds.map(|s| format!(" (ETA: {}s)", s)).unwrap_or_default();
+                let ratio = guard.ratio.map(|r| format!(" | Speed: {:.2}x", r)).unwrap_or_default();
+                format!("[AI]: {} | Chunk {} of {}{}{}", guard.label, guard.current_chunk, guard.total_chunks, eta, ratio)
+            } else {
+                String::from("AI Progress Lock Error")
+            }
         } else {
             message.to_string(
                 &framework

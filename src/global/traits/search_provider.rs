@@ -2,7 +2,7 @@ use std::{
     collections::HashMap,
     error::Error,
     fmt::{Debug, Display},
-    sync::OnceLock,
+    sync::{Mutex, OnceLock},
 };
 
 use crate::global::common::{
@@ -89,8 +89,8 @@ pub trait SearchProviderTrait: DynClone + Send {
 
 dyn_clone::clone_trait_object!(SearchProviderTrait);
 
-#[derive(Default, Clone)]
-pub struct SearchProviderWrapper(HashMap<SearchProvider, Box<dyn SearchProviderTrait>>);
+#[derive(Default)]
+pub struct SearchProviderWrapper(Mutex<HashMap<SearchProvider, Box<dyn SearchProviderTrait>>>);
 
 struct UnsupportedError(pub &'static str);
 
@@ -114,31 +114,29 @@ impl Debug for UnsupportedError {
 
 impl Error for UnsupportedError {}
 
-static mut SEARCH_PROVIDER: OnceLock<SearchProviderWrapper> = OnceLock::new();
+static SEARCH_PROVIDER: OnceLock<SearchProviderWrapper> = OnceLock::new();
 
 impl SearchProviderWrapper {
     pub fn init() {
-        unsafe {
-            if SEARCH_PROVIDER.get().is_some() {
-                *SEARCH_PROVIDER.get_mut().unwrap() = Self::default()
-            } else {
-                let _ = SEARCH_PROVIDER.set(Self::default());
-            }
+        let wrapper = SEARCH_PROVIDER.get_or_init(Self::default);
+        if let Ok(mut guard) = wrapper.0.lock() {
+            guard.clear();
         }
     }
 
-    #[allow(clippy::borrowed_box)]
-    fn get() -> &'static Box<dyn SearchProviderTrait> {
-        let provider = &unsafe { MAIN_CONFIG.get() }.unwrap().search_provider;
-        unsafe { SEARCH_PROVIDER.get_mut() }
-            .unwrap()
-            .0
-            .entry(*provider)
-            .or_insert(provider.create())
+    fn get_provider() -> Box<dyn SearchProviderTrait> {
+        let config = unsafe { MAIN_CONFIG.get() }.expect("MAIN_CONFIG not initialized");
+        let provider_type = config.search_provider;
+        let wrapper = SEARCH_PROVIDER.get_or_init(Self::default);
+        let mut guard = wrapper.0.lock().expect("Search provider lock poisoned");
+        guard
+            .entry(provider_type)
+            .or_insert_with(|| provider_type.create())
+            .clone()
     }
 
     pub fn channel(id: &str) -> Result<Channel, Box<dyn Error>> {
-        let provider = Self::get();
+        let provider = Self::get_provider();
         if !provider.supports_channel() {
             return Err(UnsupportedError("channel").into());
         }
@@ -146,7 +144,7 @@ impl SearchProviderWrapper {
     }
 
     pub fn channel_videos(id: &str) -> Result<Vec<CommonVideo>, Box<dyn Error>> {
-        let provider = Self::get();
+        let provider = Self::get_provider();
         if !provider.supports_channel_videos() {
             return Err(UnsupportedError("channel_videos").into());
         }
@@ -154,7 +152,7 @@ impl SearchProviderWrapper {
     }
 
     pub fn channel_playlists(id: &str) -> Result<Vec<CommonPlaylist>, Box<dyn Error>> {
-        let provider = Self::get();
+        let provider = Self::get_provider();
         if !provider.supports_channel_playlists() {
             return Err(UnsupportedError("channel_playlists").into());
         }
@@ -162,7 +160,7 @@ impl SearchProviderWrapper {
     }
 
     pub fn trending() -> Result<Vec<CommonVideo>, Box<dyn Error>> {
-        let provider = Self::get();
+        let provider = Self::get_provider();
         if !provider.supports_trending() {
             return Err(UnsupportedError("trending").into());
         }
@@ -170,7 +168,7 @@ impl SearchProviderWrapper {
     }
 
     pub fn popular() -> Result<Vec<PopularItem>, Box<dyn Error>> {
-        let provider = Self::get();
+        let provider = Self::get_provider();
         if !provider.supports_popular() {
             return Err(UnsupportedError("popular").into());
         }
@@ -178,7 +176,8 @@ impl SearchProviderWrapper {
     }
 
     pub fn search(filters: &Search) -> Result<Vec<SearchItem>, Box<dyn Error>> {
-        let provider = Self::get();
+        crate::global::functions::log(&format!("PROVIDER: Starting search for: {}", filters.query));
+        let provider = Self::get_provider();
         if !provider.supports_search() {
             return Err(UnsupportedError("search").into());
         }
@@ -186,7 +185,7 @@ impl SearchProviderWrapper {
     }
 
     pub fn video(id: &str) -> Result<Video, Box<dyn Error>> {
-        let provider = Self::get();
+        let provider = Self::get_provider();
         if !provider.supports_video() {
             return Err(UnsupportedError("video").into());
         }
@@ -194,7 +193,7 @@ impl SearchProviderWrapper {
     }
 
     pub fn playlist(id: &str) -> Result<Playlist, Box<dyn Error>> {
-        let provider = Self::get();
+        let provider = Self::get_provider();
         if !provider.supports_playlist() {
             return Err(UnsupportedError("playlist").into());
         }

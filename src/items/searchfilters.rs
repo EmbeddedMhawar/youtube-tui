@@ -66,16 +66,13 @@ impl SearchFilter {
                 .set_cursor_style(Style::default().fg(appearance.colors.outline_hover));
         }
 
-        self.right_textlist.selected = framework
-            .data
-            .state
-            .get::<Search>()
-            .unwrap()
-            .filters
-            .get_selected(self.left_textlist.selected);
-        self.right_textlist
-            .set_items(&self.right_options[self.left_textlist.selected])
-            .unwrap();
+        if let Some(search) = framework.data.state.get::<Search>() {
+            self.right_textlist.selected = search
+                .filters
+                .get_selected(self.left_textlist.selected);
+            let _ = self.right_textlist
+                .set_items(&self.right_options[self.left_textlist.selected]);
+        }
     }
 }
 
@@ -108,21 +105,16 @@ impl FrameworkItem for SearchFilter {
 
         if updated {
             if current_hover_before {
-                framework
-                    .data
-                    .state
-                    .get_mut::<Search>()
-                    .unwrap()
-                    .filters
-                    .set_index(
+                if let Some(search) = framework.data.state.get_mut::<Search>() {
+                    search.filters.set_index(
                         self.left_textlist.selected,
                         self.right_textlist.selected,
                         framework.data.global.get_mut::<Message>().unwrap(),
                     );
+                }
             } else {
-                self.right_textlist
-                    .set_items(&self.right_options[self.left_textlist.selected])
-                    .unwrap();
+                let _ = self.right_textlist
+                    .set_items(&self.right_options[self.left_textlist.selected]);
             }
         }
 
@@ -181,13 +173,11 @@ impl FrameworkItem for SearchFilter {
 
             frame.render_widget(self.grid.clone(), area);
 
-            self.right_textlist.selected = framework
-                .data
-                .state
-                .get::<Search>()
-                .unwrap()
-                .filters
-                .get_selected(self.left_textlist.selected);
+            if let Some(search) = framework.data.state.get::<Search>() {
+                self.right_textlist.selected = search
+                    .filters
+                    .get_selected(self.left_textlist.selected);
+            }
 
             self.left_textlist.set_height(chunks[0].height);
             frame.render_widget(self.left_textlist.clone(), chunks[0]);
@@ -278,30 +268,31 @@ impl FrameworkItem for SearchFilter {
         status.search_filter_opened = false;
         status.render_image = true;
 
-        // refresh page only if changed and enabled in options
-        let search_options = framework.data.state.get::<Search>().unwrap().clone();
-        if self.previous_state.is_none()
-            || !framework
-                .data
-                .global
-                .get::<MainConfig>()
-                .unwrap()
-                .refresh_after_modifying_search_filters
-            || self.previous_state.unwrap() == search_options.filters
-        {
-            return true;
-        }
+        if let Some(search) = framework.data.state.get::<Search>() {
+            let search_options = search.clone();
+            if self.previous_state.is_none()
+                || !framework
+                    .data
+                    .global
+                    .get::<MainConfig>()
+                    .unwrap()
+                    .refresh_after_modifying_search_filters
+                || self.previous_state.unwrap() == search_options.filters
+            {
+                return true;
+            }
 
-        let page = framework.data.state.get_mut::<Page>().unwrap();
-        if let Page::Search(search) = page {
-            *search = search_options;
-            framework
-                .data
-                .state
-                .get_mut::<Tasks>()
-                .unwrap()
-                .priority
-                .push(Task::Reload);
+            let page = framework.data.state.get_mut::<Page>().unwrap();
+            if let Page::Search(search) = page {
+                *search = search_options;
+                framework
+                    .data
+                    .state
+                    .get_mut::<Tasks>()
+                    .unwrap()
+                    .priority
+                    .push(Task::Reload);
+            }
         }
         true
     }
@@ -440,21 +431,16 @@ impl FrameworkItem for SearchFilter {
         }
 
         if is_left_list {
-            self.right_textlist
-                .set_items(&self.right_options[self.left_textlist.selected])
-                .unwrap();
+            let _ = self.right_textlist
+                .set_items(&self.right_options[self.left_textlist.selected]);
         } else {
-            framework
-                .data
-                .state
-                .get_mut::<Search>()
-                .unwrap()
-                .filters
-                .set_index(
+            if let Some(search) = framework.data.state.get_mut::<Search>() {
+                search.filters.set_index(
                     self.left_textlist.selected,
                     self.right_textlist.selected,
                     framework.data.global.get_mut::<Message>().unwrap(),
                 );
+            }
         }
 
         self.update(framework);

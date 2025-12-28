@@ -4,12 +4,11 @@ use crossterm::{
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
 use ratatui::{backend::CrosstermBackend, Terminal};
-use std::{env, error::Error, io, io::Write};
+use std::{env, error::Error, io};
 use tui_additions::framework::{Framework, State};
 use youtube_tui_ai::{exit, global::functions::text_command, init, run};
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn Error>> {
+fn main() -> Result<(), Box<dyn Error>> {
     let args = env::args().skip(1).collect::<Vec<_>>().join(" ");
 
     if let Some(s) = text_command(&args) {

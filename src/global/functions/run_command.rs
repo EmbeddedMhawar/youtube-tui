@@ -5,12 +5,10 @@ use crate::{
 };
 
 use crossterm::event::{KeyEvent, KeyModifiers};
-use home::home_dir;
 use ratatui::{backend::CrosstermBackend, Terminal};
 use std::{
     env,
     error::Error,
-    fs,
     io::Stdout,
     process::{Command as StdCommand, Stdio},
     sync::Arc,
@@ -61,17 +59,23 @@ pub fn run_single_command(
     framework: &mut Framework,
     terminal: &mut Terminal<CrosstermBackend<Stdout>>,
 ) {
-    log(&format!("RUN SINGLE COMMAND: {:?}", command));
+    log(&format!("RUN SINGLE COMMAND [len={}]: {:?}", command.len(), command));
     
     // Custom AI and Metadata Hooks
     match command {
         [] => {}
         ["select-quality", video_id] => {
             let video_id = video_id.to_string();
+            if let Some(msg) = framework.data.global.get_mut::<Message>() {
+                *msg = Message::Message(String::from("Fetching quality options..."));
+            }
+            if let Some(tasks) = framework.data.state.get_mut::<Tasks>() {
+                tasks.priority.push(Task::RenderAll);
+            }
             if let Some(rt) = crate::init::RUNTIME.get() {
                 rt.spawn(async move {
                     if let Ok(qualities) = get_video_qualities(&video_id).await {
-                        let mut menu = vec![(String::from("🔙 Back"), String::from("internal-pop-menu"))];
+                        let mut menu = vec![(String::from("Back"), String::from("internal-pop-menu"))];
                         for q in qualities {
                             menu.push((q.clone(), format!("internal-set-quality {} {}", video_id, q)));
                         }
@@ -85,11 +89,17 @@ pub fn run_single_command(
         }
         ["select-subtitles", video_id] => {
             let video_id = video_id.to_string();
+            if let Some(msg) = framework.data.global.get_mut::<Message>() {
+                *msg = Message::Message(String::from("Fetching subtitles..."));
+            }
+            if let Some(tasks) = framework.data.state.get_mut::<Tasks>() {
+                tasks.priority.push(Task::RenderAll);
+            }
             if let Some(rt) = crate::init::RUNTIME.get() {
                 rt.spawn(async move {
                     if let Ok(subs) = get_subtitles(&video_id).await {
-                        let mut menu = vec![(String::from("🔙 Back"), String::from("internal-pop-menu"))];
-                        menu.push((String::from("🚫 None"), String::from("internal-set-subtitle none")));
+                        let mut menu = vec![(String::from("Back"), String::from("internal-pop-menu"))];
+                        menu.push((String::from("None"), String::from("internal-set-subtitle none")));
                         for s in subs {
                             menu.push((s.clone(), format!("internal-set-subtitle {}", s)));
                         }
@@ -101,9 +111,14 @@ pub fn run_single_command(
             }
             return;
         }
-        ["play-video", video_id, url] => {
-            let _video_id = video_id.to_string();
+        ["play-video", _video_id, url, ..] => {
             let url = url.trim_matches('\'').to_string();
+            if let Some(msg) = framework.data.global.get_mut::<Message>() {
+                *msg = Message::Message(String::from("Launching player..."));
+            }
+            if let Some(tasks) = framework.data.state.get_mut::<Tasks>() {
+                tasks.priority.push(Task::RenderAll);
+            }
             if let Some(rt) = crate::init::RUNTIME.get() {
                 rt.spawn(async move {
                     let sub_code = SELECTED_SUBTITLE.lock().ok().and_then(|guard| guard.clone()).or_else(|| Some("en".to_string()));
@@ -125,14 +140,27 @@ pub fn run_single_command(
             }
             return;
         }
-        ["remove-music", video_id] => {
+        ["remove-music", video_id, ..] => {
             let video_id = video_id.to_string();
+            if let Some(msg) = framework.data.global.get_mut::<Message>() {
+                *msg = Message::Message(String::from("Initializing AI separation..."));
+            }
+            if let Some(tasks) = framework.data.state.get_mut::<Tasks>() {
+                tasks.priority.push(Task::RenderAll);
+            }
             std::thread::spawn(move || {
-                let rt = tokio::runtime::Builder::new_multi_thread()
+                let rt_res = tokio::runtime::Builder::new_multi_thread()
                     .worker_threads(4)
                     .enable_all()
-                    .build()
-                    .unwrap();
+                    .build();
+                
+                let rt = match rt_res {
+                    Ok(r) => r,
+                    Err(e) => {
+                        log(&format!("CRITICAL: Failed to build tokio runtime: {}", e));
+                        return;
+                    }
+                };
                 
                 rt.block_on(async move {
                     let _ = TokioCommand::new("pkill").args(["-f", "demucs"]).status().await;
@@ -152,15 +180,20 @@ pub fn run_single_command(
                             
                             log(&format!("MAIN: Launching mpv with args: {}", mpv_args));
                             
-                            let mut child = StdCommand::new("/bin/sh")
+                            match StdCommand::new("/bin/sh")
                                 .args(["-c", &format!("{} >/dev/null 2>&1", mpv_args)])
                                 .stdin(Stdio::null())
                                 .stdout(Stdio::null())
                                 .stderr(Stdio::null())
-                                .spawn()
-                                .expect("Failed to spawn mpv");
+                                .spawn() {
+                                    Ok(mut child) => {
+                                        let _ = child.wait();
+                                    }
+                                    Err(e) => {
+                                        log(&format!("ERROR: Failed to spawn mpv: {}", e));
+                                    }
+                                }
                             
-                            let _ = child.wait();
                             log("MAIN: mpv player finished.");
                             reset_ai_progress();
                             let _ = TokioCommand::new("pkill").args(["-f", "demucs"]).status().await;

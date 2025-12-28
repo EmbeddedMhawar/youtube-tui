@@ -70,9 +70,10 @@ impl FrameworkItem for SearchBar {
         framework: &mut tui_additions::framework::FrameworkClean,
         _info: tui_additions::framework::ItemInfo,
     ) -> Result<(), Box<dyn Error>> {
-        let search = framework.data.state.get::<Search>().unwrap().query.clone();
-        self.text_field.content = search;
-        let _ = self.text_field.last();
+        if let Some(search) = framework.data.state.get::<Search>() {
+            self.text_field.content = search.query.clone();
+            let _ = self.text_field.last();
+        }
 
         Ok(())
     }
