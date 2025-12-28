@@ -151,7 +151,14 @@ impl FrameworkItem for MessageBar {
                 } else {
                     String::new()
                 };
-                format!("[AI]: {}{}{}{}", guard.label, progress, eta, ratio)
+
+                let combined_label = if !guard.worker_label.is_empty() && guard.label != guard.worker_label {
+                    format!("{} | {}", guard.label, guard.worker_label)
+                } else {
+                    guard.label.clone()
+                };
+
+                format!("[AI]: {}{}{}{}", combined_label, progress, eta, ratio)
             } else {
                 String::from("AI Progress Lock Error")
             }

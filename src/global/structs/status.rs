@@ -9,6 +9,7 @@ use crate::config::Provider;
 #[derive(Clone, Default, Debug)]
 pub struct AiProgress {
     pub label: String,
+    pub worker_label: String,
     pub current_chunk: usize,
     pub total_chunks: usize,
     pub eta_seconds: Option<u64>,

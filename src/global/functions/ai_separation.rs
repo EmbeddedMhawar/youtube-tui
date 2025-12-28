@@ -210,6 +210,7 @@ pub fn reset_ai_progress() {
     if let Ok(mut progress) = SHARED_AI_PROGRESS.lock() {
         progress.active = false;
         progress.label = String::new();
+        progress.worker_label = String::new();
         progress.current_chunk = 0;
         progress.total_chunks = 0;
         progress.eta_seconds = None;
@@ -261,9 +262,15 @@ pub async fn start_ai_separation(video_id: String, mode: String) -> Result<u16> 
             log("AI: Download FAILED");
             return Err(anyhow!("Download failed")); 
         }
+        if let Ok(mut progress) = SHARED_AI_PROGRESS.lock() {
+            progress.label = "Download complete. Splitting...".to_string();
+        }
     }
 
     log("AI: Splitting audio into 60s chunks...");
+    if let Ok(mut progress) = SHARED_AI_PROGRESS.lock() {
+        progress.label = "Splitting into 60s chunks...".to_string();
+    }
     let split_status = Command::new("ffmpeg")
         .args(["-y", "-hide_banner", "-loglevel", "error", "-i", audio_path.to_str().unwrap(), "-f", "segment", "-segment_time", "60", "-c", "copy", chunks_dir.join("chunk_%03d.m4a").to_str().unwrap()])
         .stdin(Stdio::null())
@@ -289,7 +296,7 @@ pub async fn start_ai_separation(video_id: String, mode: String) -> Result<u16> 
     // Set initial progress
     if let Ok(mut progress) = SHARED_AI_PROGRESS.lock() {
         progress.total_chunks = total;
-        progress.label = "Initializing...".to_string();
+        progress.worker_label = "Initializing...".to_string();
     }
 
     let playback_file_clone = playback_file.clone();
@@ -339,7 +346,7 @@ pub async fn start_ai_separation(video_id: String, mode: String) -> Result<u16> 
                 
                 // Update label with detailed status
                 if let Ok(mut progress) = SHARED_AI_PROGRESS.lock() {
-                    progress.label = format!("Separating Batch ({} cores)...", threads_per_job * 2);
+                    progress.worker_label = format!("Separating Batch ({} cores)...", threads_per_job * 2);
                 }
 
                 let cmd_args = [
@@ -423,13 +430,13 @@ pub async fn start_ai_separation(video_id: String, mode: String) -> Result<u16> 
                     progress.total_chunks = total;
                     progress.ratio = Some(r);
                     progress.eta_seconds = Some(((total - (i + batch_chunks.len())) as f32 * (60.0 / r)) as u64);
-                    progress.label = "Separating (Batched)...".to_string();
+                    progress.worker_label = "Separating (Batched)...".to_string();
                 }
             } else {
                 if let Ok(mut progress) = SHARED_AI_PROGRESS.lock() {
                     progress.current_chunk = i + batch_chunks.len();
                     progress.total_chunks = total;
-                    progress.label = "Processing (Cached)...".to_string();
+                    progress.worker_label = "Processing (Cached)...".to_string();
                 }
             }
 
@@ -448,6 +455,9 @@ pub async fn start_ai_separation(video_id: String, mode: String) -> Result<u16> 
         
         if current_size >= target_size { 
             log("AI: Initial buffer READY.");
+            if let Ok(mut progress) = SHARED_AI_PROGRESS.lock() {
+                progress.label = "Playing".to_string();
+            }
             break; 
         }
 
