@@ -292,8 +292,8 @@ pub async fn start_ai_separation(video_id: String, mode: String) -> Result<u16> 
 
     tokio::spawn(async move {
         log("WORKER: Started");
-        let mut current_quota = 600; // Start stronger
-        let mut current_threads = 6;
+        let mut current_quota = 800; // Maximize for 8 cores
+        let mut threads_per_job = 4; // Total 8 threads with -j 2
 
         for (i, chunk_path) in entries.iter().enumerate() {
             let chunk_start = Instant::now();
@@ -301,24 +301,49 @@ pub async fn start_ai_separation(video_id: String, mode: String) -> Result<u16> 
             let stem_name = if mode == "vocals" { "vocals.wav" } else { "no_vocals.wav" };
             let separated_wav = out_chunks_dir_clone.join("htdemucs").join(chunk_name).join(stem_name);
 
-            if !separated_wav.exists() {
-                log(&format!("WORKER: Separating chunk {}/{} ({})... Quota: {}%, Threads: {}", i+1, total, chunk_name, current_quota, current_threads));
-                let _ = Command::new("systemd-run")
-                    .args([
-                        "--user", "--scope", "-p", "MemoryMax=10G", 
-                        "-p", &format!("CPUQuota={}%", current_quota),
-                        "-E", &format!("OMP_NUM_THREADS={}", current_threads),
-                        "-E", &format!("MKL_NUM_THREADS={}", current_threads),
-                        "-E", &format!("OPENBLAS_NUM_THREADS={}", current_threads),
-                        "-E", &format!("VECLIB_MAXIMUM_THREADS={}", current_threads),
-                        demucs_bin.to_str().unwrap(), "-n", "htdemucs", "--two-stems=vocals",
-                        "--segment", "7", "--shifts", "0", "--overlap", "0.1", "-d", "cpu", "-j", "1",
-                        "-o", out_chunks_dir_clone.to_str().unwrap(), chunk_path.to_str().unwrap()
-                    ])
-                    .stdout(Stdio::null())
-                    .stderr(Stdio::null())
-                    .status()
+            let was_cached = separated_wav.exists();
+            log(&format!("WORKER: Chunk {}/{} - Cached: {} - Checking path: {:?}", i+1, total, was_cached, separated_wav));
+            if !was_cached {
+                if !demucs_bin.exists() {
+                    log(&format!("WORKER: ERROR - demucs binary not found at {:?}", demucs_bin));
+                    continue;
+                }
+
+                let cmd_args = [
+                    "--user", "--scope", "--quiet",
+                    "-p", "MemoryMax=10G", 
+                    "-p", &format!("CPUQuota={}%", current_quota),
+                    "-E", "OMP_WAIT_POLICY=PASSIVE",
+                    "-E", &format!("OMP_NUM_THREADS={}", threads_per_job),
+                    "-E", &format!("MKL_NUM_THREADS={}", threads_per_job),
+                    "-E", &format!("OPENBLAS_NUM_THREADS={}", threads_per_job),
+                    "-E", &format!("VECLIB_MAXIMUM_THREADS={}", threads_per_job),
+                    demucs_bin.to_str().unwrap(), "-n", "htdemucs", "--two-stems=vocals",
+                    "--segment", "7", "--shifts", "0", "--overlap", "0.1", "-d", "cpu", "-j", "2",
+                    "-o", out_chunks_dir_clone.to_str().unwrap(), chunk_path.to_str().unwrap()
+                ];
+                
+                let output = Command::new("/usr/bin/systemd-run")
+                    .args(&cmd_args)
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::piped())
+                    .output()
                     .await;
+
+                match output {
+                    Ok(out) => {
+                        if !out.status.success() {
+                            let err_msg = String::from_utf8_lossy(&out.stderr);
+                            let out_msg = String::from_utf8_lossy(&out.stdout);
+                            log(&format!("WORKER: systemd-run FAILED (code {:?}) for chunk {}: {}\nSTDOUT: {}", out.status.code(), chunk_name, err_msg.trim(), out_msg.trim()));
+                        } else {
+                            log(&format!("WORKER: systemd-run SUCCESS for chunk {}", chunk_name));
+                        }
+                    }
+                    Err(e) => {
+                        log(&format!("WORKER: CRITICAL ERROR - Failed to spawn systemd-run: {}", e));
+                    }
+                }
             }
 
             if separated_wav.exists() {
@@ -338,28 +363,41 @@ pub async fn start_ai_separation(video_id: String, mode: String) -> Result<u16> 
                 }
             }
 
-            // DYNAMIC CPU LOGIC based on LAST chunk
+            // DYNAMIC CPU LOGIC & METRICS
             let chunk_elapsed = chunk_start.elapsed().as_secs_f32();
-            let ratio = 30.0 / chunk_elapsed;
-            
-            // Adjust for next chunk based on 1.5x target
-            if ratio < 1.40 {
-                // Too slow, increase power aggressively
-                current_quota = (current_quota + 150).min(800);
-                current_threads = (current_threads + 2).min(8);
-            } else if ratio > 1.60 {
-                // Too fast, save power
-                current_quota = (current_quota - 100).max(200);
-                current_threads = (current_threads - 1).max(2);
+            let mut ratio = None;
+            let mut eta = None;
+
+            if !was_cached {
+                let r = 30.0 / chunk_elapsed;
+                ratio = Some(r);
+                eta = Some(((total - (i + 1)) as f32 * chunk_elapsed) as u64);
+
+                // Adjust for next chunk based on 1.5x target
+                if r < 1.40 {
+                    current_quota = (current_quota + 100).min(800);
+                    threads_per_job = (threads_per_job + 1).min(4);
+                } else if r > 1.80 {
+                    current_quota = (current_quota - 100).max(400);
+                    threads_per_job = (threads_per_job - 1).max(2);
+                }
             }
 
             {
                 if let Ok(mut progress) = SHARED_AI_PROGRESS.lock() {
                     progress.current_chunk = i + 1;
                     progress.total_chunks = total;
-                    progress.eta_seconds = Some(((total - (i + 1)) as f32 * chunk_elapsed) as u64);
-                    progress.ratio = Some(ratio);
-                    progress.label = if i + 1 < 2 { "Wait for Playback...".to_string() } else { "Separating...".to_string() };
+                    if !was_cached {
+                        progress.eta_seconds = eta;
+                        progress.ratio = ratio;
+                    }
+                    progress.label = if i + 1 < 2 && !was_cached { 
+                        "Wait for Playback...".to_string() 
+                    } else if was_cached {
+                        "Processing (Cached)...".to_string()
+                    } else { 
+                        "Separating...".to_string() 
+                    };
                 }
             }
         }
