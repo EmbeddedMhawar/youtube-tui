@@ -15,6 +15,7 @@ pub struct AiProgress {
     pub eta_seconds: Option<u64>,
     pub ratio: Option<f32>,
     pub active: bool,
+    pub last_update: Option<std::time::Instant>,
 }
 
 lazy_static! {

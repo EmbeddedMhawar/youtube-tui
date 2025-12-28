@@ -144,7 +144,23 @@ impl FrameworkItem for MessageBar {
 
         let content = if is_ai_active {
             if let Ok(guard) = ai_progress_res {
-                let eta = guard.eta_seconds.map(|s| format!(" (ETA: {}s)", s)).unwrap_or_default();
+                let eta = if let Some(s) = guard.eta_seconds {
+                    let mut remaining = s;
+                    if let Some(last) = guard.last_update {
+                        let elapsed = last.elapsed().as_secs();
+                        remaining = s.saturating_sub(elapsed);
+                    }
+
+                    let m = remaining / 60;
+                    let s = remaining % 60;
+                    if m > 0 {
+                        format!(" (ETA: {}m {}s)", m, s)
+                    } else {
+                        format!(" (ETA: {}s)", s)
+                    }
+                } else {
+                    String::new()
+                };
                 let ratio = guard.ratio.map(|r| format!(" | Speed: {:.2}x", r)).unwrap_or_default();
                 let progress = if guard.total_chunks > 0 {
                     format!(" | Chunk {} of {}", guard.current_chunk, guard.total_chunks)

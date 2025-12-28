@@ -7,7 +7,8 @@ use std::process::Stdio;
 use tokio::io::AsyncWriteExt;
 use tokio::net::TcpListener;
 use tokio::process::Command;
-use tokio::time::{sleep, Duration, Instant};
+use tokio::time::{sleep, Duration};
+use std::time::Instant;
 use regex::Regex;
 use chrono;
 
@@ -214,6 +215,7 @@ pub fn reset_ai_progress() {
         progress.current_chunk = 0;
         progress.total_chunks = 0;
         progress.eta_seconds = None;
+        progress.last_update = None;
     }
 }
 
@@ -246,6 +248,7 @@ pub async fn start_ai_separation(video_id: String, mode: String) -> Result<u16> 
             progress.current_chunk = 0;
             progress.total_chunks = 0;
             progress.eta_seconds = None;
+            progress.last_update = None;
         }
     }
 
@@ -263,13 +266,13 @@ pub async fn start_ai_separation(video_id: String, mode: String) -> Result<u16> 
             return Err(anyhow!("Download failed")); 
         }
         if let Ok(mut progress) = SHARED_AI_PROGRESS.lock() {
-            progress.label = "Download complete. Splitting...".to_string();
+            progress.label = "Download complete".to_string();
         }
     }
 
     log("AI: Splitting audio into 60s chunks...");
     if let Ok(mut progress) = SHARED_AI_PROGRESS.lock() {
-        progress.label = "Splitting into 60s chunks...".to_string();
+        progress.label = "Splitting audio...".to_string();
     }
     let split_status = Command::new("ffmpeg")
         .args(["-y", "-hide_banner", "-loglevel", "error", "-i", audio_path.to_str().unwrap(), "-f", "segment", "-segment_time", "60", "-c", "copy", chunks_dir.join("chunk_%03d.m4a").to_str().unwrap()])
@@ -296,7 +299,7 @@ pub async fn start_ai_separation(video_id: String, mode: String) -> Result<u16> 
     // Set initial progress
     if let Ok(mut progress) = SHARED_AI_PROGRESS.lock() {
         progress.total_chunks = total;
-        progress.worker_label = "Initializing...".to_string();
+        progress.worker_label = "Initializing worker...".to_string();
     }
 
     let playback_file_clone = playback_file.clone();
@@ -430,6 +433,7 @@ pub async fn start_ai_separation(video_id: String, mode: String) -> Result<u16> 
                     progress.total_chunks = total;
                     progress.ratio = Some(r);
                     progress.eta_seconds = Some(((total - (i + batch_chunks.len())) as f32 * (60.0 / r)) as u64);
+                    progress.last_update = Some(Instant::now());
                     progress.worker_label = "Separating (Batched)...".to_string();
                 }
             } else {
@@ -471,6 +475,7 @@ pub async fn start_ai_separation(video_id: String, mode: String) -> Result<u16> 
             
             progress.label = format!("Buffer: {}% | Wait for 4 chunks...", (current_size * 100 / target_size));
             progress.eta_seconds = Some(wait_eta);
+            progress.last_update = Some(Instant::now());
         }
 
         if start_wait.elapsed() > Duration::from_secs(480) { // 8 minutes timeout
