@@ -6,7 +6,7 @@ use lazy_static::lazy_static;
 
 use crate::config::Provider;
 
-#[derive(Clone, Default, Debug)]
+#[derive(Clone, Debug)]
 pub struct AiProgress {
     pub label: String,
     pub worker_label: String,
@@ -15,7 +15,26 @@ pub struct AiProgress {
     pub eta_seconds: Option<u64>,
     pub ratio: Option<f32>,
     pub active: bool,
-    pub last_update: Option<std::time::Instant>,
+    pub split_finished: bool,
+    pub worker_finished: bool,
+    pub last_update: std::time::Instant,
+}
+
+impl Default for AiProgress {
+    fn default() -> Self {
+        Self {
+            label: String::new(),
+            worker_label: String::new(),
+            current_chunk: 0,
+            total_chunks: 0,
+            eta_seconds: None,
+            ratio: None,
+            active: false,
+            split_finished: false,
+            worker_finished: false,
+            last_update: std::time::Instant::now(),
+        }
+    }
 }
 
 lazy_static! {

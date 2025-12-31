@@ -142,39 +142,48 @@ impl FrameworkItem for MessageBar {
             return;
         }
 
-        let content = if is_ai_active {
+        let mut content = if is_ai_active {
             if let Ok(guard) = ai_progress_res {
-                let eta = if let Some(s) = guard.eta_seconds {
-                    let mut remaining = s;
-                    if let Some(last) = guard.last_update {
-                        let elapsed = last.elapsed().as_secs();
-                        remaining = s.saturating_sub(elapsed);
-                    }
+                let mut eta_secs = guard.eta_seconds;
+                
+                // Dynamic decrement of ETA every second based on last update timestamp
+                if let Some(s) = eta_secs {
+                    let elapsed = guard.last_update.elapsed().as_secs();
+                    eta_secs = Some(s.saturating_sub(elapsed));
+                }
 
-                    let m = remaining / 60;
-                    let s = remaining % 60;
-                    if m > 0 {
-                        format!(" (ETA: {}m {}s)", m, s)
+                let eta_str = eta_secs.map(|s| {
+                    if s >= 60 {
+                        format!(" (ETA: {}m {}s)", s / 60, s % 60)
                     } else {
                         format!(" (ETA: {}s)", s)
                     }
-                } else {
-                    String::new()
-                };
+                }).unwrap_or_default();
+
                 let ratio = guard.ratio.map(|r| format!(" | Speed: {:.2}x", r)).unwrap_or_default();
                 let progress = if guard.total_chunks > 0 {
                     format!(" | Chunk {} of {}", guard.current_chunk, guard.total_chunks)
                 } else {
                     String::new()
                 };
-
-                let combined_label = if !guard.worker_label.is_empty() && guard.label != guard.worker_label {
-                    format!("{} | {}", guard.label, guard.worker_label)
+                
+                let full_label = if guard.worker_finished {
+                    String::from("Processing Complete")
+                } else if !guard.worker_label.is_empty() {
+                    if guard.label.contains("Buffer") {
+                        format!("{} | {}", guard.label, guard.worker_label)
+                    } else {
+                        guard.worker_label.clone()
+                    }
                 } else {
                     guard.label.clone()
                 };
 
-                format!("[AI]: {}{}{}{}", combined_label, progress, eta, ratio)
+                if guard.worker_finished {
+                    format!("[AI]: {}", full_label)
+                } else {
+                    format!("[AI]: {}{}{}{}", full_label, progress, eta_str, ratio)
+                }
             } else {
                 String::from("AI Progress Lock Error")
             }
@@ -188,6 +197,10 @@ impl FrameworkItem for MessageBar {
                     .message_bar_default,
             )
         };
+
+        if is_ai_active && !message.is_none() {
+            content = format!("{} | {}", content, message.to_string(""));
+        }
 
         let paragraph = Paragraph::new(content).block(block);
         frame.render_widget(paragraph, area);

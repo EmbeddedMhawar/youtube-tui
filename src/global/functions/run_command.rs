@@ -172,19 +172,48 @@ pub fn run_single_command(
                             let sub_code = SELECTED_SUBTITLE.lock().ok().and_then(|guard| guard.clone()).or_else(|| Some("en".to_string()));
                             let quality = SELECTED_QUALITY.lock().ok().and_then(|guard| guard.clone()).unwrap_or_else(|| "bestvideo[height<=1080]".to_string());
                             
-                            let mut mpv_args = format!("mpv --title=walker-yt '{}' --ytdl-format='{}' --audio-file=tcp://127.0.0.1:{} --audio-demuxer=rawaudio --demuxer-rawaudio-rate=44100 --demuxer-rawaudio-channels=2 --demuxer-rawaudio-format=s16le --cache=yes --cache-secs=3600 --aid=1 --audio-file-auto=no --pause=no --no-terminal --msg-level=all=no", url, quality, port);
+                            let yt_dlp_path = expand_path("~/.local/bin/yt-dlp");
+                            let mut mpv_args_vec = vec![
+                                "--no-config".to_string(),
+                                "--title=walker-yt".to_string(),
+                                format!("--script-opts=ytdl_hook-ytdl_path={}", yt_dlp_path.to_str().unwrap()),
+                                format!("--ytdl-format={}", quality),
+                                "--no-audio".to_string(),
+                                format!("--audio-file=tcp://127.0.0.1:{}", port),
+                                "--audio-demuxer=rawaudio".to_string(),
+                                "--demuxer-rawaudio-rate=44100".to_string(),
+                                "--demuxer-rawaudio-channels=2".to_string(),
+                                "--demuxer-rawaudio-format=s16le".to_string(),
+                                "--video-sync=audio".to_string(),
+                                "--audio-wait-open=10".to_string(),
+                                "--stream-buffer-size=4MiB".to_string(),
+                                "--cache=yes".to_string(),
+                                "--cache-secs=3600".to_string(),
+                                "--aid=1".to_string(),
+                                "--audio-file-auto=no".to_string(),
+                                "--pause=no".to_string(),
+                                "--cache-pause=yes".to_string(),
+                                "--cache-pause-wait=8".to_string(),
+                                "--cache-pause-initial=yes".to_string(),
+                                "--msg-level=all=v".to_string(),
+                            ];
 
                             if let Some(code) = sub_code {
-                                mpv_args.push_str(&format!(" --ytdl-raw-options=write-subs=,write-auto-sub=,sub-langs='{}.*' --sub-visibility=yes --sub-auto=all --sid=1", code));
+                                mpv_args_vec.push(format!("--ytdl-raw-options=write-subs=,write-auto-sub=,sub-langs={}.*", code));
+                                mpv_args_vec.push("--sub-visibility=yes".to_string());
+                                mpv_args_vec.push("--sub-auto=all".to_string());
+                                mpv_args_vec.push("--sid=1".to_string());
                             }
                             
-                            log(&format!("MAIN: Launching mpv with args: {}", mpv_args));
+                            mpv_args_vec.push(url.clone());
                             
-                            match StdCommand::new("/bin/sh")
-                                .args(["-c", &format!("{} >/dev/null 2>&1", mpv_args)])
-                                .stdin(Stdio::null())
-                                .stdout(Stdio::null())
-                                .stderr(Stdio::null())
+                            log(&format!("MAIN: Launching mpv with args: {:?}", mpv_args_vec));
+                            
+                            let log_file = std::fs::File::create("/tmp/mpv-walker.log").unwrap();
+                            match StdCommand::new("mpv")
+                                .args(&mpv_args_vec)
+                                .stdout(Stdio::from(log_file.try_clone().unwrap()))
+                                .stderr(Stdio::from(log_file))
                                 .spawn() {
                                     Ok(mut child) => {
                                         let _ = child.wait();
@@ -200,6 +229,7 @@ pub fn run_single_command(
                         }
                         Err(e) => {
                             log(&format!("AI ERROR: {}", e));
+                            reset_ai_progress();
                         }
                     }
                 });
